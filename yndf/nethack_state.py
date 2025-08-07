@@ -94,6 +94,8 @@ class NethackState:
         self.player = NethackPlayer(obs)
         self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
         self.time = obs['blstats'][nethack.NLE_BL_TIME]
+        self.tty_chars = obs['tty_chars']
+        self.tty_colors = obs['tty_colors']
 
         self.exit = None
         if prev is not None and prev.exit is not None:
