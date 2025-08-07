@@ -219,7 +219,7 @@ class NetHackWindow(QtWidgets.QMainWindow):
             self.terminal.set_frame(result.frame)
             self._add_step(result)
             if result.ending is not None:
-                self._finish_episode(result.ending)
+                self._finish_episode(result.ending.name)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         """Handle key presses for actions."""

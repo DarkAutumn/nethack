@@ -21,7 +21,7 @@ class Controller(yndf.NethackController):
         return self._get_terminal_frame(info["state"])
 
     def step(self, action: int | None = None) -> yndf.StepInfo:
-        """Take a step in the game with the given action, returning StepInfo or EpisodeEnd."""
+        """Take a step in the game with the given action, returning StepInfo."""
 
         if action is None:
             # Predict a maskable action if none is provided
