@@ -1,6 +1,7 @@
 """Counts messages and words in messages."""
 
 import json
+import os
 import string
 from collections import Counter
 from typing import Iterator, Tuple, Dict, Any
@@ -21,6 +22,19 @@ class MessageCounter:
         self._raw_counter: Counter[str] = Counter()
         # Precompute translation table for stripping punctuation
         self._translator = str.maketrans('', '', string.punctuation)
+
+    # save when deleted
+    def __del__(self):
+        """
+        Save the current counts to 'message_counts.json' when the instance is deleted.
+        """
+        i = 0
+        fn = f'message_counts_{i}.json'
+        while os.path.exists(fn):
+            i += 1
+            fn = f'message_counts_{i}.json'
+
+        self.save(fn)
 
     def add(self, text: str) -> None:
         """
