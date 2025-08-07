@@ -15,7 +15,7 @@ def _make_env(_):
         return gym.make("YenderFlow-v0", actions=ACTIONS)
     return _init
 
-def main(total_timesteps: int = 100_000, multiprocessing: bool = False):
+def main(total_timesteps: int = 100_000, multiprocessing: bool = True):
     """Trains an agent to play nethack."""
     if multiprocessing:
         num_cpu = 8
