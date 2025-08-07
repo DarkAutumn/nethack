@@ -96,6 +96,8 @@ class NethackState:
         self.time = obs['blstats'][nethack.NLE_BL_TIME]
         self.tty_chars = obs['tty_chars']
         self.tty_colors = obs['tty_colors']
+        self.chars = obs['chars']
+        self.glyphs = obs['glyphs']
 
         self.exit = None
         if prev is not None and prev.exit is not None:
@@ -105,10 +107,9 @@ class NethackState:
             if index is not None and len(index[0]) > 0 and len(index[1]) > 0:
                 self.exit = index[0][0], index[1][0]
 
-        if prev is not None:
+        if prev is not None and self.player.depth == prev.player.depth:
             self.visited = prev.visited.copy()
         else:
-
             self.visited: np.ndarray = np.zeros((21, 79), dtype=np.uint8)
 
         self.visited[self.player.position] = 1
