@@ -245,7 +245,7 @@ class NetHackWindow(QtWidgets.QMainWindow):
             QtCore.Qt.Key_A <= key <= QtCore.Qt.Key_Z):
             code = (key - QtCore.Qt.Key_A) + 1
         else:
-            code = event.nativeScanCode()
+            return
 
         self._on_step(code)
 
