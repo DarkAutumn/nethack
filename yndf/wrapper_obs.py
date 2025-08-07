@@ -9,7 +9,6 @@ class NethackObsWrapper(gym.Wrapper):
     """Convert NLE observation → dict(glyphs, visited_mask, agent_yx)."""
     def __init__(self, env: gym.Env) -> None:
         super().__init__(env)
-        print(self.observation_space["glyphs"])
         self.observation_space = gym.spaces.Dict(
             glyphs=self.env.observation_space["glyphs"],
             visited_mask=gym.spaces.Box(0, 1, shape=(21, 79), dtype=np.uint8),
