@@ -39,17 +39,14 @@ class Controller(yndf.NethackController):
         if (ending := info.get("ending", None)) is not None:
             assert terminated or truncated, "Episode should end if an ending is provided."
 
-        terminal_frame = self._get_terminal_frame(info["state"])
-        return yndf.StepInfo(
-            frame=terminal_frame,
-            action=ACTIONS[action].name,
-            reward=reward,
-            labels=list(info.get('rewards', {}).items()),
-            ending=ending
-        )
+        state : yndf.NethackState = info["state"]
+
+        terminal_frame = self._get_terminal_frame(state)
+        return yndf.StepInfo(terminal_frame, ACTIONS[action].name, state.as_dict(), reward,
+                             list(info.get('rewards', {}).items()), ending)
 
     def _get_terminal_frame(self, state : yndf.NethackState ) -> yndf.TerminalFrame:
-        return yndf.TerminalFrame(chars = state.tty_chars, colors = state.tty_colors)
+        return yndf.TerminalFrame(chars = state.tty_chars, colors = state.tty_colors, glyphs=state.glyphs)
 
 def main():
     """Run the YenderFlow GUI debugger."""
