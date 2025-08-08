@@ -5,7 +5,7 @@ from typing import Optional
 from nle import nethack
 import numpy as np
 
-from yndf.movement import GlyphKind, calculate_wavefront_and_glyph_kinds
+from yndf.movement import CLOSED_DOORS, GlyphKind, calculate_wavefront_and_glyph_kinds
 
 class NethackPlayer:
     """Player state in Nethack."""
@@ -152,6 +152,17 @@ class NethackState:
             pos = (int(pos[0]), int(pos[1]))
             if pos not in self.found_exits:
                 self.found_exits.append(pos)
+
+        self.locked_doors = prev.locked_doors.copy() if prev is not None else []
+        for lock in self.locked_doors:
+            if self.floor_glyphs[lock] not in CLOSED_DOORS:
+                self.locked_doors.remove(lock)
+
+    def add_locked_door(self, pos):
+        """Add a locked door position to the state."""
+        if pos not in self.locked_doors:
+            assert self.floor_glyphs[pos] in CLOSED_DOORS
+            self.locked_doors.append(pos)
 
     @property
     def is_player_on_exit(self):

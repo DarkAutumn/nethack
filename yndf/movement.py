@@ -18,8 +18,6 @@ class SolidGlyphs(Enum):
     S_tdwall    =  9 + nle.nethack.GLYPH_CMAP_OFF
     S_tlwall    = 10 + nle.nethack.GLYPH_CMAP_OFF
     S_trwall    = 11 + nle.nethack.GLYPH_CMAP_OFF
-    #S_vcdoor    = 15 + nle.nethack.GLYPH_CMAP_OFF # closed door, vertical wall
-    #S_hcdoor    = 16 + nle.nethack.GLYPH_CMAP_OFF # closed door, horizontal wall
     S_bars      = 17 + nle.nethack.GLYPH_CMAP_OFF # KMH -- iron bars
     S_tree      = 18 + nle.nethack.GLYPH_CMAP_OFF # KMH
     S_sink      = 30 + nle.nethack.GLYPH_CMAP_OFF
@@ -80,6 +78,8 @@ class GlyphKind(Enum):
 
 UNPASSABLE_WAVEFRONT = 1_000_000
 
+CLOSED_DOORS = (PassableGlyphs.S_vcdoor.value, PassableGlyphs.S_hcdoor.value)
+
 def _manhattan_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
     """Calculate the Manhattan distance between two points."""
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -105,12 +105,12 @@ def can_move(glyphs : np.ndarray, from_pos : Tuple[int, int], to_pos : Tuple[int
 
     return True
 
-def adjacent_to_closed_door(glyphs : np.ndarray, y: int, x: int) -> bool:
+def adjacent_to(glyphs : np.ndarray, y: int, x: int, kind) -> bool:
     """Check if the given position is adjacent to a closed door."""
     for dy, dx in DIRECTIONS:
         ny, nx = y + dy, x + dx
         if (0 <= ny < glyphs.shape[0] and 0 <= nx < glyphs.shape[1]):
-            if glyphs[ny, nx] in (PassableGlyphs.S_vcdoor.value, PassableGlyphs.S_hcdoor.value):
+            if glyphs[ny, nx] in kind:
                 return True
     return False
 

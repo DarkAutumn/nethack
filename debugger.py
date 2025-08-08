@@ -43,12 +43,14 @@ class Controller(yndf.gui.NethackController):
         available_actions = [ACTIONS[i].name for i, masked in enumerate(action_mask) if masked]
         masked_actions = [ACTIONS[i].name for i, masked in enumerate(action_mask) if not masked]
 
+        state : yndf.NethackState = info["state"]
         properties = {
             "Actions": available_actions,
-            "Disallowed": masked_actions
+            "Disallowed": masked_actions,
+            "Locked Doors": state.locked_doors,
         }
 
-        return yndf.gui.StepInfo(info["state"], ACTIONS[action].name, reward,
+        return yndf.gui.StepInfo(state, ACTIONS[action].name, reward,
                                  list(info.get('rewards', {}).items()), properties, ending)
 
 def main():
