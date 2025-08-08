@@ -133,10 +133,7 @@ class NethackState:
         self.tty_colors = obs['tty_colors'].copy()
         self.chars = obs['chars'].copy()
         self.glyphs = obs['glyphs'].copy()
-        self.tty_chars = obs['tty_chars']
-        self.tty_colors = obs['tty_colors']
-        self.chars = obs['chars']
-        self.glyphs = obs['glyphs']
+        self.floor_glyphs = self._create_floor_glyphs(obs['glyphs'], prev)
 
         if prev is not None and self.player.depth == prev.player.depth:
             self.visited = prev.visited.copy()
@@ -145,7 +142,7 @@ class NethackState:
 
         self.visited[self.player.position] = 1
 
-        wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.glyphs, self.visited)
+        wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.floor_glyphs, self.visited)
         self.wavefront = wavefront
         self.glyph_kinds = glyph_kinds
 
@@ -171,3 +168,20 @@ class NethackState:
         }
         result.update(self.player.as_dict())
         return result
+
+    def _create_floor_glyphs(self, glyphs: np.ndarray, prev: Optional['NethackState']) -> np.ndarray:
+        """Create a 2D array of floor glyphs, where each cell contains the glyph without characters."""
+        if prev is not None and self.player.depth != prev.player.depth:
+            prev = None
+
+        floor_glyphs = glyphs.copy()
+        if prev is None:
+            return floor_glyphs
+
+        for y in range(glyphs.shape[0]):
+            for x in range(glyphs.shape[1]):
+                glyph = glyphs[y, x]
+                if nethack.glyph_is_monster(glyph) or nethack.glyph_is_object(glyph):
+                    floor_glyphs[y, x] = prev.floor_glyphs[y, x]
+
+        return floor_glyphs

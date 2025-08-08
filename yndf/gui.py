@@ -131,18 +131,16 @@ class TerminalWidget(QtWidgets.QWidget):
         MAP_ROW0 = 1
         MAP_COL0 = 0
 
-        glyph_str = "—"  # not in map region (message/status/rightmost column)
-        map_rows = len(self.state.glyphs)          # usually 21
-        map_cols = len(self.state.glyphs[0])       # usually 79
         gy = y - MAP_ROW0
         gx = x - MAP_COL0
-        if 0 <= gy < map_rows and 0 <= gx < map_cols:
-            glyph_str = str(self.state.glyphs[gy][gx])
+        if not (0 <= gy < self.state.glyphs.shape[0] and 0 <= gx < self.state.glyphs.shape[1]):
+            return f"Pos: ({gy}, {gx})\nGlyph: Out of bounds"
 
         tooltip = []
 
         tooltip.append(f"Pos: ({gy}, {gx})")
-        tooltip.append(f"Glyph: {glyph_str}, Char: {ch}, Color: {color}")
+        tooltip.append(f"Glyph: {str(self.state.glyphs[gy][gx])}, Char: {ch}, Color: {color}")
+        tooltip.append(f"Floor Glyph: {self.state.floor_glyphs[gy, gx]}")
 
         if 0 <= gy < self.state.glyph_kinds.shape[0] and 0 <= gx < self.state.glyph_kinds.shape[1]:
             kind_val = self.state.glyph_kinds[gy, gx]
