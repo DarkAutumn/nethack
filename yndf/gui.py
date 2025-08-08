@@ -15,9 +15,12 @@ import sys
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Dict, Optional, List, Tuple
+from typing import Optional, List, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
+
+from yndf.nethack_state import NethackState
+from yndf.wavefront import UNPASSABLE_WAVEFRONT, GlyphKind
 
 # pylint: disable=c-extension-no-member,invalid-name
 
@@ -26,26 +29,12 @@ from PySide6 import QtCore, QtGui, QtWidgets
 # --------------------------------------------------------------------------- #
 
 @dataclass
-class TerminalFrame:
-    """
-    A full NetHack terminal frame:
-      - chars: 24 strings of exactly 80 characters each
-      - colors: 24x80 integers (ANSI 0-15) matching chars
-    """
-    chars: List[str]
-    colors: List[List[int]]
-    glyphs: List[List[int]]
-
-@dataclass
 class StepInfo:
-    """Information about a single step in the game.
-    Contains the current frame, action taken, reward received,
-    labels for rewards, and an optional ending."""
-    frame: TerminalFrame
-    action: str                    # e.g. 'NE' or '' for no-op
-    status: Dict[str, object]
+    """Information about a single step in the game."""
+    state: NethackState
+    action: str
     reward: float
-    labels: List[Tuple[str, float]]
+    reward_labels: List[Tuple[str, float]]
     ending: Optional[Enum | str] = None
 
 # --------------------------------------------------------------------------- #
@@ -58,7 +47,7 @@ class NethackController:
       - reset() -> TerminalFrame
       - step(action: Optional[int]) -> StepInfo
     """
-    def reset(self) -> TerminalFrame:
+    def reset(self) -> NethackState:
         """Reset the simulation."""
         raise NotImplementedError
 
@@ -75,10 +64,8 @@ class TerminalWidget(QtWidgets.QWidget):
     def __init__(self, rows: int = 24, cols: int = 80, parent=None) -> None:
         super().__init__(parent)
         self.rows, self.cols = rows, cols
-        # initialize blank frame
-        self.chars = [" " * cols for _ in range(rows)]
-        self.colors = [[7] * cols for _ in range(rows)]
-        self.glyphs = [[0] * cols for _ in range(rows)]
+        # initialize state
+        self.state : NethackState = None
         # monospace font setup
         font = QtGui.QFont("Monospace")
         font.setStyleHint(QtGui.QFont.Monospace)
@@ -92,17 +79,15 @@ class TerminalWidget(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self._last_hover_cell: Tuple[int, int] = (-1, -1)
 
-    def set_frame(self, frame: TerminalFrame) -> None:
+    def set_frame(self, state : NethackState) -> None:
         """Set the terminal frame to display."""
         # enforce exact 24×80 shape
-        assert len(frame.chars) == self.rows, "Frame rows mismatch"
-        assert all(len(line) == self.cols for line in frame.chars), "Char line length mismatch"
-        assert len(frame.colors) == self.rows, "Color rows mismatch"
-        assert all(len(row) == self.cols for row in frame.colors), "Color row length mismatch"
+        assert len(state.tty_chars) == self.rows, "Frame rows mismatch"
+        assert all(len(line) == self.cols for line in state.tty_chars), "Char line length mismatch"
+        assert len(state.tty_colors) == self.rows, "Color rows mismatch"
+        assert all(len(row) == self.cols for row in state.tty_colors), "Color row length mismatch"
         # copy data
-        self.chars = frame.chars.copy()
-        self.glyphs = frame.glyphs.copy()
-        self.colors = [row.copy() for row in frame.colors]
+        self.state = state
         self.update()
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
@@ -139,22 +124,39 @@ class TerminalWidget(QtWidgets.QWidget):
         if not (0 <= x < self.cols and 0 <= y < self.rows):
             return ""
 
-        ch = self.chars[y][x]
-        color = self.colors[y][x]
+        ch = self.state.tty_chars[y][x]
+        color = self.state.tty_colors[y][x]
 
         # NetHack tty defaults: map is 21 rows x 79 cols starting at (row 1, col 0)
         MAP_ROW0 = 1
         MAP_COL0 = 0
 
         glyph_str = "—"  # not in map region (message/status/rightmost column)
-        map_rows = len(self.glyphs)          # usually 21
-        map_cols = len(self.glyphs[0])       # usually 79
+        map_rows = len(self.state.glyphs)          # usually 21
+        map_cols = len(self.state.glyphs[0])       # usually 79
         gy = y - MAP_ROW0
         gx = x - MAP_COL0
         if 0 <= gy < map_rows and 0 <= gx < map_cols:
-            glyph_str = str(self.glyphs[gy][gx])
+            glyph_str = str(self.state.glyphs[gy][gx])
 
-        return f"Glyph: {glyph_str}, Char: {ch}, Color: {color}"
+        tooltip = []
+
+        tooltip.append(f"Pos: ({gy}, {gx})")
+        tooltip.append(f"Glyph: {glyph_str}, Char: {ch}, Color: {color}")
+
+        if 0 <= gy < self.state.glyph_kinds.shape[0] and 0 <= gx < self.state.glyph_kinds.shape[1]:
+            kind_val = self.state.glyph_kinds[gy, gx]
+            kind_val = GlyphKind(kind_val) if kind_val in GlyphKind else kind_val
+            tooltip.append(f"Glyph Kind: {kind_val.name}")
+
+        if 0 <= gy < self.state.wavefront.shape[0] and 0 <= gx < self.state.wavefront.shape[1]:
+            wave_val = self.state.wavefront[gy, gx]
+            if wave_val == UNPASSABLE_WAVEFRONT:
+                tooltip.append("Wavefront: Unpassable")
+            else:
+                tooltip.append(f"Wavefront: {wave_val}")
+
+        return "\n".join(tooltip)
 
     def paintEvent(self, _) -> None:
         """Paint the terminal widget."""
@@ -173,8 +175,8 @@ class TerminalWidget(QtWidgets.QWidget):
         ]]
         for r in range(self.rows):
             y = (r + 1) * self.char_h
-            row_chars = self.chars[r]
-            row_colors = self.colors[r]
+            row_chars = self.state.tty_chars[r]
+            row_colors = self.state.tty_colors[r]
             for c in range(self.cols):
                 painter.setPen(ansi[row_colors[c]])
                 # coerce uint8 / bytes to a one‐char str
@@ -310,10 +312,10 @@ class NetHackWindow(QtWidgets.QMainWindow):
 
     def _on_step(self, action: Optional[int] = None) -> None:
         act = action if isinstance(action, int) and not isinstance(action, bool) else None
-        result = self.controller.step(act)
+        result : StepInfo = self.controller.step(act)
         if result is not None:
             assert isinstance(result, StepInfo), f"Expected StepInfo, got {type(result)}"
-            self.terminal.set_frame(result.frame)
+            self.terminal.set_frame(result.state)
             self._add_step(result)
             if result.ending is not None:
                 ending = result.ending.name if isinstance(result.ending, Enum) else str(result.ending)
@@ -349,15 +351,14 @@ class NetHackWindow(QtWidgets.QMainWindow):
 
     def _add_step(self, step: StepInfo) -> None:
         item = QtWidgets.QTreeWidgetItem([step.action, f"{step.reward:+.2f}"])
-        for lbl, val in step.labels:
+        for lbl, val in step.reward_labels:
             QtWidgets.QTreeWidgetItem(item, [f"• {lbl}", f"{val:+.2f}"])
             self._rewards_counter[lbl] += val
         self.actions.addTopLevelItem(item)
         self.actions.scrollToItem(item)
 
-        if step.status:
-            self._latest_status.update(step.status)
-            self._refresh_runinfo()
+        self._latest_status.update(step.state.as_dict())
+        self._refresh_runinfo()
 
         self._refresh_rewards()
 
@@ -429,38 +430,43 @@ def run_gui(controller: NethackController) -> None:
 #                         Example stub controller                           #
 # --------------------------------------------------------------------------- #
 if __name__ == '__main__':
+    class MockState:
+        """Mock state for demo purposes."""
+        def __init__(self):
+            self.tty_chars = ['.'*80]*24
+            self.tty_colors = [[7]*80 for _ in range(24)]
+            self.glyphs = [[0]*79 for _ in range(21)]
+
+        def as_dict(self):
+            """Return a mock state dictionary."""
+            return {
+                "steps": 0,
+                "pos": 0,
+                "hp": 20,
+                "dlvl": 1
+            }
+
     class DemoCtrl(NethackController):
         """Demo to ensure the UI renders."""
         def __init__(self):
             self.steps = 0
 
-        def reset(self) -> TerminalFrame:
+        def reset(self):
             self.steps = 0
-            return TerminalFrame(
-                chars=['.'*80]*24,
-                colors=[[7]*80 for _ in range(24)],
-                glyphs=[[0]*79 for _ in range(21)]   # map-sized glyphs for realism
-            )
+            return MockState()
 
         def step(self, _: Optional[int] = None) -> StepInfo:
             time.sleep(0.05)
             self.steps += 1
             pos = self.steps % 80
-            chars = [''.join('@' if col == pos else '.' for col in range(80)) for _ in range(24)]
-            colors = [[7]*80 for _ in range(24)]
-            glyphs = [[0]*79 for _ in range(21)]
-            frame = TerminalFrame(chars=chars, colors=colors, glyphs=glyphs)
-
-            status = {
-                "steps": self.steps,
-                "pos": pos,
-                "hp": 12 + (self.steps % 3),    # just to show changing values
-                "dlvl": 1
-            }
+            frame = MockState()
+            frame.tty_chars = [''.join('@' if col == pos else '.' for col in range(80)) for _ in range(24)]
+            frame.tty_colors = [[7]*80 for _ in range(24)]
+            frame.glyphs = [[0]*79 for _ in range(21)]
 
             if self.steps < 50:
-                return StepInfo(frame, 'S', status, 0.0, [])
+                return StepInfo(frame, 'S', 0.0, [])
             if self.steps < 55:
-                return StepInfo(frame, 'N', status, 0.1, [('test', 0.1)])
-            return StepInfo(frame, 'S', status, 1.0, [('test', 1.0)], ending='DemoEnd')
+                return StepInfo(frame, 'N', 0.1, [('test', 0.1)])
+            return StepInfo(frame, 'S', 1.0, [('test', 1.0)], ending='DemoEnd')
     run_gui(DemoCtrl())

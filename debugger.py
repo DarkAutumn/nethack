@@ -14,11 +14,12 @@ class Controller(yndf.NethackController):
         self.model = model
         self.obs = None
 
-    def reset(self) -> yndf.TerminalFrame:
+    def reset(self) -> yndf.NethackState:
         """Reset the controller to the initial state and return the first frame."""
         obs, info = self.env.reset()
         self.obs = obs
-        return self._get_terminal_frame(info["state"])
+        state : yndf.NethackState = info["state"]
+        return state
 
     def step(self, action: int | None = None) -> yndf.StepInfo:
         """Take a step in the game with the given action, returning StepInfo."""
@@ -41,12 +42,7 @@ class Controller(yndf.NethackController):
 
         state : yndf.NethackState = info["state"]
 
-        terminal_frame = self._get_terminal_frame(state)
-        return yndf.StepInfo(terminal_frame, ACTIONS[action].name, state.as_dict(), reward,
-                             list(info.get('rewards', {}).items()), ending)
-
-    def _get_terminal_frame(self, state : yndf.NethackState ) -> yndf.TerminalFrame:
-        return yndf.TerminalFrame(chars = state.tty_chars, colors = state.tty_colors, glyphs=state.glyphs)
+        return yndf.StepInfo(state, ACTIONS[action].name, reward, list(info.get('rewards', {}).items()), ending)
 
 def main():
     """Run the YenderFlow GUI debugger."""
