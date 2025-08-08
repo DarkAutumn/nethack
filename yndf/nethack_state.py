@@ -5,7 +5,7 @@ from typing import Optional
 from nle import nethack
 import numpy as np
 
-from yndf.wavefront import GlyphKind, calculate_wavefront_and_glyph_kinds
+from yndf.movement import GlyphKind, calculate_wavefront_and_glyph_kinds
 
 class NethackPlayer:
     """Player state in Nethack."""
