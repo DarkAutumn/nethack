@@ -145,13 +145,12 @@ class NethackState:
         self.wavefront = wavefront
         self.glyph_kinds = glyph_kinds
 
-        self.found_exits = []
-        if prev is not None and prev.found_exits:
-            self.found_exits = prev.found_exits.copy()
-        else:
-            exits = glyph_kinds == GlyphKind.EXIT.value
-            for pos in np.argwhere(exits):
-                self.found_exits.append((pos[0], pos[1]))
+        self.found_exits = prev.found_exits.copy() if prev is not None else []
+        exits = glyph_kinds == GlyphKind.EXIT.value
+        for pos in np.argwhere(exits):
+            pos = (int(pos[0]), int(pos[1]))
+            if pos not in self.found_exits:
+                self.found_exits.append(pos)
 
     @property
     def is_player_on_exit(self):
