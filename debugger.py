@@ -39,7 +39,17 @@ class Controller(yndf.gui.NethackController):
         if (ending := info.get("ending", None)) is not None:
             assert terminated or truncated, "Episode should end if an ending is provided."
 
-        return yndf.gui.StepInfo(info["state"], ACTIONS[action].name, reward, list(info.get('rewards', {}).items()), ending)
+        action_mask = info['action_mask']
+        available_actions = [ACTIONS[i].name for i, masked in enumerate(action_mask) if masked]
+        masked_actions = [ACTIONS[i].name for i, masked in enumerate(action_mask) if not masked]
+
+        properties = {
+            "Actions": available_actions,
+            "Disallowed": masked_actions
+        }
+
+        return yndf.gui.StepInfo(info["state"], ACTIONS[action].name, reward,
+                                 list(info.get('rewards', {}).items()), properties, ending)
 
 def main():
     """Run the YenderFlow GUI debugger."""

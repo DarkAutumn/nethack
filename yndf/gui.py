@@ -15,12 +15,12 @@ import sys
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from yndf.nethack_state import NethackState
-from yndf.wavefront import UNPASSABLE_WAVEFRONT, GlyphKind
+from yndf.movement import UNPASSABLE_WAVEFRONT, GlyphKind
 
 # pylint: disable=c-extension-no-member,invalid-name
 
@@ -35,6 +35,7 @@ class StepInfo:
     action: str
     reward: float
     reward_labels: List[Tuple[str, float]]
+    properties : Dict[str, object]
     ending: Optional[Enum | str] = None
 
 # --------------------------------------------------------------------------- #
@@ -355,7 +356,10 @@ class NetHackWindow(QtWidgets.QMainWindow):
         self.actions.addTopLevelItem(item)
         self.actions.scrollToItem(item)
 
-        self._latest_status.update(step.state.as_dict())
+        status = step.state.as_dict().copy()
+        status.update(step.properties or {})
+
+        self._latest_status.update(status)
         self._refresh_runinfo()
 
         self._refresh_rewards()
@@ -463,8 +467,8 @@ if __name__ == '__main__':
             frame.glyphs = [[0]*79 for _ in range(21)]
 
             if self.steps < 50:
-                return StepInfo(frame, 'S', 0.0, [])
+                return StepInfo(frame, 'S', 0.0, [], {"Actions": [], "Disallowed": []})
             if self.steps < 55:
-                return StepInfo(frame, 'N', 0.1, [('test', 0.1)])
-            return StepInfo(frame, 'S', 1.0, [('test', 1.0)], ending='DemoEnd')
+                return StepInfo(frame, 'N', 0.1, [('test', 0.1)], {"Actions": [], "Disallowed": []})
+            return StepInfo(frame, 'S', 1.0, [('test', 1.0)], {"Actions": [], "Disallowed": []}, ending='DemoEnd')
     run_gui(DemoCtrl())
