@@ -11,14 +11,6 @@ class NethackActionWrapper(gym.Wrapper):
 
     def __init__(self, env : gym.Env) -> None:
         super().__init__(env)
-        self.observation_space = gym.spaces.Dict(
-            glyphs=self.env.observation_space["glyphs"],
-            visited_mask=gym.spaces.Box(0, 1, shape=(21, 79), dtype=np.uint8),
-            agent_yx=gym.spaces.Box(
-                low=np.array([0, 0]), high=np.array([78, 20]), dtype=np.int16
-            ),
-        )
-
         actions = env.unwrapped.actions
         if nethack.MiscDirection.DOWN not in actions:
             self._descend_only = np.ones(len(actions), dtype=bool)
