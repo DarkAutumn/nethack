@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List
+from typing import List, Tuple
 import numpy as np
 import nle
 
@@ -57,9 +57,18 @@ class PassableGlyphs(Enum):
 
 PLAYER_GLYPH = 333
 
-DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
-              (0, -1),           (0, 1),
-              (1, -1),  (1, 0),  (1, 1)]
+DIRECTION_MAP = {
+    nle.nethack.CompassDirection.NW : (-1, -1),
+    nle.nethack.CompassDirection.N : (-1, 0),
+    nle.nethack.CompassDirection.NE : (-1, 1),
+    nle.nethack.CompassDirection.W : (0, -1),
+    nle.nethack.CompassDirection.E : (0, 1),
+    nle.nethack.CompassDirection.SW : (1, -1),
+    nle.nethack.CompassDirection.S : (1, 0),
+    nle.nethack.CompassDirection.SE : (1, 1),
+}
+
+DIRECTIONS = list(DIRECTION_MAP.values())
 
 class GlyphKind(Enum):
     """Enum for mapping glyphs to their walkable state."""
@@ -70,6 +79,40 @@ class GlyphKind(Enum):
     EXIT = 5
 
 UNPASSABLE_WAVEFRONT = 1_000_000
+
+def _manhattan_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    """Calculate the Manhattan distance between two points."""
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+def _cannot_move_diagonal(glyph: int) -> bool:
+    """Check if a glyph is an open door."""
+    return glyph in (PassableGlyphs.S_vodoor.value, PassableGlyphs.S_hodoor.value)
+
+def can_move(glyphs : np.ndarray, from_pos : Tuple[int, int], to_pos : Tuple[int, int]) -> bool:
+    """Check if the player can move onto a given glyph."""
+    if not (0 <= to_pos[0] < glyphs.shape[0] and 0 <= to_pos[1] < glyphs.shape[1]):
+        return False
+
+    glyph = glyphs[to_pos[0], to_pos[1]]
+    if glyph in SolidGlyphs:
+        return False
+
+    # can't move diagonally through an open door, can open a door diagnonally
+    if _cannot_move_diagonal(glyph) or _cannot_move_diagonal(glyphs[from_pos[0], from_pos[1]]):
+        if _manhattan_distance(from_pos, to_pos) == 2:
+            # can't move diagonally through a door
+            return False
+
+    return True
+
+def adjacent_to_closed_door(glyphs : np.ndarray, y: int, x: int) -> bool:
+    """Check if the given position is adjacent to a closed door."""
+    for dy, dx in DIRECTIONS:
+        ny, nx = y + dy, x + dx
+        if (0 <= ny < glyphs.shape[0] and 0 <= nx < glyphs.shape[1]):
+            if glyphs[ny, nx] in (PassableGlyphs.S_vcdoor.value, PassableGlyphs.S_hcdoor.value):
+                return True
+    return False
 
 def has_surrounding(glyphs : np.ndarray, visited : np.ndarray, y: int, x: int, func : callable) -> bool:
     """Check if the surrounding glyphs match the specified kind."""
@@ -113,7 +156,7 @@ def calculate_glyph_kinds(glyphs : np.ndarray, visited : np.ndarray) -> np.ndarr
 
     return glyph_kinds
 
-def calculate_wavefront(glyph_kinds : np.ndarray, targets: List[tuple[int, int]]) -> np.ndarray:
+def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: List[tuple[int, int]]) -> np.ndarray:
     """Calculate the wavefront from a list of target locations.  Target values start at 0 and increase by 1 for each
     step away from the target running through PASSABLE and FRONTIER tiles."""
     wavefront = np.full(glyph_kinds.shape, UNPASSABLE_WAVEFRONT, dtype=np.uint32)
@@ -136,6 +179,9 @@ def calculate_wavefront(glyph_kinds : np.ndarray, targets: List[tuple[int, int]]
             if glyph_kinds[ny, nx] not in (GlyphKind.PASSABLE.value, GlyphKind.FRONTIER.value):
                 continue
 
+            if not can_move(glyphs, (y, x), (ny, nx)):
+                continue
+
             if wavefront[ny, nx] > current_value + 1:
                 wavefront[ny, nx] = current_value + 1
                 queue.append((ny, nx))
@@ -146,5 +192,5 @@ def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, visited: np.ndarray)
     """Calculate the wavefront from a NethackState and a list of target locations."""
     glyph_kinds = calculate_glyph_kinds(glyphs, visited)
     targets = np.argwhere((glyph_kinds == GlyphKind.EXIT.value) | (glyph_kinds == GlyphKind.FRONTIER.value))
-    wavefront = calculate_wavefront(glyph_kinds, targets)
+    wavefront = calculate_wavefront(glyphs, glyph_kinds, targets)
     return wavefront, glyph_kinds

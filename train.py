@@ -8,7 +8,8 @@ import yndf
 
 MOVE_ACTIONS = tuple(nethack.CompassDirection) # 8 directions
 DESCEND_ACTION = (nethack.MiscDirection.DOWN,) # '>'
-ACTIONS = MOVE_ACTIONS + DESCEND_ACTION
+OTHER_ACTIONS = (nethack.Command.KICK, nethack.Command.SEARCH)
+ACTIONS = MOVE_ACTIONS + DESCEND_ACTION + OTHER_ACTIONS
 
 def _make_env(_):
     def _init():
