@@ -28,8 +28,9 @@ class NethackFeaturesExtractor(BaseFeaturesExtractor):
             dummy = torch.zeros(1, in_channels, 21, 79)
             cnn_out = self.cnn(dummy).view(1, -1).size(1)
 
+        # +2 for agent_yx, +8 for wavefront
         layers = []
-        layers.append(nn.Linear(cnn_out + 2, hidden_dim))
+        layers.append(nn.Linear(cnn_out + 10, hidden_dim))
         layers.append(nn.ReLU(inplace=True))
         for _ in range(hidden_layers - 1):
             layers.append(nn.Linear(hidden_dim, hidden_dim))
@@ -44,14 +45,15 @@ class NethackFeaturesExtractor(BaseFeaturesExtractor):
 
         g_emb = self.embedding(glyphs).permute(0, 3, 1, 2)
         x = torch.cat([g_emb, seen], dim=1)
-
         x = self.cnn(x).flatten(1)
 
         agent_yx = obs["agent_yx"].float()
-        agent_yx[:, 0 ] /= 20.0
+        agent_yx[:, 0] /= 20.0
         agent_yx[:, 1] /= 78.0
 
-        return self.fc(torch.cat([x, agent_yx], dim=1))
+        wavefront = obs["wavefront"].float()  # shape: (B, 8), values 0/1
+
+        return self.fc(torch.cat([x, agent_yx, wavefront], dim=1))
 
 class NethackMaskablePolicy(MaskableActorCriticPolicy):
     """Custom policy for Nethack that uses the NethackFeaturesExtractor."""

@@ -5,12 +5,14 @@ from typing import Optional
 from nle import nethack
 import numpy as np
 
+from yndf.movement import GlyphKind, calculate_wavefront_and_glyph_kinds
+
 class NethackPlayer:
     """Player state in Nethack."""
     # pylint: disable=no-member
 
     def __init__(self, obs):
-        self.position = obs['blstats'][1], obs['blstats'][0]  # (y, x) coords of the player
+        self.position = (int(obs['blstats'][1]), int(obs['blstats'][0]))  # (y, x) coords of the player
         self.score = obs['blstats'][nethack.NLE_BL_SCORE]
         self.gold = obs['blstats'][nethack.NLE_BL_GOLD]
         self.hp = obs['blstats'][nethack.NLE_BL_HP]
@@ -86,6 +88,39 @@ class NethackPlayer:
         """Check if the player is terminally ill."""
         return bool(self._conditions & nethack.BL_MASK_TERMILL)
 
+    def as_dict(self):
+        """Return player attributes as a dictionary."""
+        status_flags = [
+            ("confused", self.is_confused),
+            ("blind", self.is_blind),
+            ("deaf", self.is_deaf),
+            ("flying", self.is_flying),
+            ("food_poisoned", self.is_food_poisoned),
+            ("hallucinating", self.is_hallucinating),
+            ("levitating", self.is_levitating),
+            ("riding", self.is_riding),
+            ("slime", self.is_slime),
+            ("stone", self.is_stone),
+            ("strangled", self.is_strangled),
+            ("stunned", self.is_stunned),
+            ("terminally_ill", self.is_terminally_ill),
+        ]
+
+        status = " ".join(name for name, flag in status_flags if flag) or "healthy"
+        return {
+            "x": int(self.position[1]),
+            "y": int(self.position[0]),
+            "score": self.score,
+            "gold": self.gold,
+            "hp": self.hp,
+            "hp_max": self.hp_max,
+            "level": self.level,
+            "depth": self.depth,
+            "exp": self.exp,
+            "hunger": self.hunger,
+            "status": status,
+        }
+
 class NethackState:
     """World state in Nethack."""
     # pylint: disable=no-member
@@ -94,18 +129,11 @@ class NethackState:
         self.player = NethackPlayer(obs)
         self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
         self.time = obs['blstats'][nethack.NLE_BL_TIME]
-        self.tty_chars = obs['tty_chars']
-        self.tty_colors = obs['tty_colors']
-        self.chars = obs['chars']
-        self.glyphs = obs['glyphs']
-
-        self.exit = None
-        if prev is not None and prev.exit is not None:
-            self.exit = prev.exit
-        else:
-            index = obs['chars'] == ord('>')
-            if index is not None and len(index[0]) > 0 and len(index[1]) > 0:
-                self.exit = index[0][0], index[1][0]
+        self.tty_chars = obs['tty_chars'].copy()
+        self.tty_colors = obs['tty_colors'].copy()
+        self.chars = obs['chars'].copy()
+        self.glyphs = obs['glyphs'].copy()
+        self.floor_glyphs = self._create_floor_glyphs(obs['glyphs'], prev)
 
         if prev is not None and self.player.depth == prev.player.depth:
             self.visited = prev.visited.copy()
@@ -114,11 +142,46 @@ class NethackState:
 
         self.visited[self.player.position] = 1
 
+        wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.floor_glyphs, self.visited)
+        self.wavefront = wavefront
+        self.glyph_kinds = glyph_kinds
+
+        self.found_exits = prev.found_exits.copy() if prev is not None else []
+        exits = glyph_kinds == GlyphKind.EXIT.value
+        for pos in np.argwhere(exits):
+            pos = (int(pos[0]), int(pos[1]))
+            if pos not in self.found_exits:
+                self.found_exits.append(pos)
+
     @property
     def is_player_on_exit(self):
         """Check if the player is on the exit."""
-        if self.exit is None:
-            return False
+        return self.player.position in self.found_exits
 
-        agent_yx = self.player.position
-        return agent_yx == self.exit
+
+    def as_dict(self):
+        """Return the state as a dictionary."""
+        result = {
+            "time": self.time,
+            "message": self.message,
+            "found_exits": self.found_exits,
+        }
+        result.update(self.player.as_dict())
+        return result
+
+    def _create_floor_glyphs(self, glyphs: np.ndarray, prev: Optional['NethackState']) -> np.ndarray:
+        """Create a 2D array of floor glyphs, where each cell contains the glyph without characters."""
+        if prev is not None and self.player.depth != prev.player.depth:
+            prev = None
+
+        floor_glyphs = glyphs.copy()
+        if prev is None:
+            return floor_glyphs
+
+        for y in range(glyphs.shape[0]):
+            for x in range(glyphs.shape[1]):
+                glyph = glyphs[y, x]
+                if nethack.glyph_is_monster(glyph) or nethack.glyph_is_object(glyph):
+                    floor_glyphs[y, x] = prev.floor_glyphs[y, x]
+
+        return floor_glyphs

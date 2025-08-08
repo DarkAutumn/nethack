@@ -10,6 +10,7 @@ and optional ending. The frame and color arrays are now guaranteed
 to be the same shape (24 rows x 80 columns).
 """
 from __future__ import annotations
+from enum import Enum
 import sys
 import time
 from collections import Counter, defaultdict
@@ -18,6 +19,9 @@ from typing import Optional, List, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from yndf.nethack_state import NethackState
+from yndf.wavefront import UNPASSABLE_WAVEFRONT, GlyphKind
+
 # pylint: disable=c-extension-no-member,invalid-name
 
 # --------------------------------------------------------------------------- #
@@ -25,25 +29,13 @@ from PySide6 import QtCore, QtGui, QtWidgets
 # --------------------------------------------------------------------------- #
 
 @dataclass
-class TerminalFrame:
-    """
-    A full NetHack terminal frame:
-      - chars: 24 strings of exactly 80 characters each
-      - colors: 24x80 integers (ANSI 0-15) matching chars
-    """
-    chars: List[str]
-    colors: List[List[int]]
-
-@dataclass
 class StepInfo:
-    """Information about a single step in the game.
-    Contains the current frame, action taken, reward received,
-    labels for rewards, and an optional ending."""
-    frame: TerminalFrame
-    action: str                    # e.g. 'NE' or '' for no-op
+    """Information about a single step in the game."""
+    state: NethackState
+    action: str
     reward: float
-    labels: List[Tuple[str, float]]
-    ending: Optional[str] = None
+    reward_labels: List[Tuple[str, float]]
+    ending: Optional[Enum | str] = None
 
 # --------------------------------------------------------------------------- #
 #                            External controller                             #
@@ -55,7 +47,7 @@ class NethackController:
       - reset() -> TerminalFrame
       - step(action: Optional[int]) -> StepInfo
     """
-    def reset(self) -> TerminalFrame:
+    def reset(self) -> NethackState:
         """Reset the simulation."""
         raise NotImplementedError
 
@@ -72,9 +64,8 @@ class TerminalWidget(QtWidgets.QWidget):
     def __init__(self, rows: int = 24, cols: int = 80, parent=None) -> None:
         super().__init__(parent)
         self.rows, self.cols = rows, cols
-        # initialize blank frame
-        self.chars = [" " * cols for _ in range(rows)]
-        self.colors = [[7] * cols for _ in range(rows)]
+        # initialize state
+        self.state : NethackState = None
         # monospace font setup
         font = QtGui.QFont("Monospace")
         font.setStyleHint(QtGui.QFont.Monospace)
@@ -85,17 +76,85 @@ class TerminalWidget(QtWidgets.QWidget):
         self.char_h = fm.height()
         self.setMinimumSize(self.char_w * cols, self.char_h * rows)
 
-    def set_frame(self, frame: TerminalFrame) -> None:
+        self.setMouseTracking(True)
+        self._last_hover_cell: Tuple[int, int] = (-1, -1)
+
+    def set_frame(self, state : NethackState) -> None:
         """Set the terminal frame to display."""
         # enforce exact 24×80 shape
-        assert len(frame.chars) == self.rows, "Frame rows mismatch"
-        assert all(len(line) == self.cols for line in frame.chars), "Char line length mismatch"
-        assert len(frame.colors) == self.rows, "Color rows mismatch"
-        assert all(len(row) == self.cols for row in frame.colors), "Color row length mismatch"
+        assert len(state.tty_chars) == self.rows, "Frame rows mismatch"
+        assert all(len(line) == self.cols for line in state.tty_chars), "Char line length mismatch"
+        assert len(state.tty_colors) == self.rows, "Color rows mismatch"
+        assert all(len(row) == self.cols for row in state.tty_colors), "Color row length mismatch"
         # copy data
-        self.chars = frame.chars.copy()
-        self.colors = [row.copy() for row in frame.colors]
+        self.state = state
         self.update()
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        """Handle mouse movement to show tooltips with cell info."""
+        # In Qt6, positions are QPointF
+        pos = event.position()
+        col = int(pos.x() // self.char_w)
+        row = int(pos.y() // self.char_h)
+
+        if 0 <= col < self.cols and 0 <= row < self.rows:
+            if (col, row) != self._last_hover_cell:
+                self._last_hover_cell = (col, row)
+                text = self.getHoverText(col, row)  # (x, y) == (col, row)
+                QtWidgets.QToolTip.showText(
+                    event.globalPosition().toPoint(),  # screen coords
+                    text,
+                    self
+                )
+        else:
+            # outside the grid
+            QtWidgets.QToolTip.hideText()
+            self._last_hover_cell = (-1, -1)
+
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        """Handle mouse leaving the widget area."""
+        QtWidgets.QToolTip.hideText()
+        self._last_hover_cell = (-1, -1)
+        super().leaveEvent(event)
+
+    def getHoverText(self, x: int, y: int) -> str:
+        """Get the text at the given coordinates, handling the 21x79 glyph map."""
+        if not (0 <= x < self.cols and 0 <= y < self.rows):
+            return ""
+
+        ch = self.state.tty_chars[y][x]
+        color = self.state.tty_colors[y][x]
+
+        # NetHack tty defaults: map is 21 rows x 79 cols starting at (row 1, col 0)
+        MAP_ROW0 = 1
+        MAP_COL0 = 0
+
+        gy = y - MAP_ROW0
+        gx = x - MAP_COL0
+        if not (0 <= gy < self.state.glyphs.shape[0] and 0 <= gx < self.state.glyphs.shape[1]):
+            return f"Pos: ({gy}, {gx})\nGlyph: Out of bounds"
+
+        tooltip = []
+
+        tooltip.append(f"Pos: ({gy}, {gx})")
+        tooltip.append(f"Glyph: {str(self.state.glyphs[gy][gx])}, Char: {ch}, Color: {color}")
+        tooltip.append(f"Floor Glyph: {self.state.floor_glyphs[gy, gx]}")
+
+        if 0 <= gy < self.state.glyph_kinds.shape[0] and 0 <= gx < self.state.glyph_kinds.shape[1]:
+            kind_val = self.state.glyph_kinds[gy, gx]
+            kind_val = GlyphKind(kind_val) if kind_val in GlyphKind else kind_val
+            tooltip.append(f"Glyph Kind: {kind_val.name}")
+
+        if 0 <= gy < self.state.wavefront.shape[0] and 0 <= gx < self.state.wavefront.shape[1]:
+            wave_val = self.state.wavefront[gy, gx]
+            if wave_val == UNPASSABLE_WAVEFRONT:
+                tooltip.append("Wavefront: Unpassable")
+            else:
+                tooltip.append(f"Wavefront: {wave_val}")
+
+        return "\n".join(tooltip)
 
     def paintEvent(self, _) -> None:
         """Paint the terminal widget."""
@@ -114,8 +173,8 @@ class TerminalWidget(QtWidgets.QWidget):
         ]]
         for r in range(self.rows):
             y = (r + 1) * self.char_h
-            row_chars = self.chars[r]
-            row_colors = self.colors[r]
+            row_chars = self.state.tty_chars[r]
+            row_colors = self.state.tty_colors[r]
             for c in range(self.cols):
                 painter.setPen(ansi[row_colors[c]])
                 # coerce uint8 / bytes to a one‐char str
@@ -143,7 +202,7 @@ class NetHackWindow(QtWidgets.QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("NetHack RL GUI")
-        self.resize(1000, 800)
+        self.resize(1400, 900)
         # Top button bar (fixed height)
         buttons = [("Restart", self._on_restart),
                    ("Play ▷", self._on_play_pause),
@@ -165,35 +224,73 @@ class NetHackWindow(QtWidgets.QMainWindow):
         hdr = self.actions.header()
         hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+
+        self.actions.setMinimumWidth(320)
+
         mid_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         mid_split.addWidget(self.terminal)
         mid_split.addWidget(self.actions)
-        mid_split.setStretchFactor(0, 2)
-        mid_split.setStretchFactor(1, 3)
+        mid_split.setStretchFactor(0, 3)
+        mid_split.setStretchFactor(1, 2)
         # Bottom: rewards summary | endings
         self.rewards = self._make_table("Reward label", "Total")
         self.endings = self._make_table("Ending", "Count")
         bot_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         bot_split.addWidget(self.rewards)
         bot_split.addWidget(self.endings)
-        # Compose layout
+
+
+        # Right: RunInfo table on the far right ---
+        self.runinfo = self._make_table("Name", "Value")
+        self.runinfo.verticalHeader().setVisible(False)
+        self.runinfo.setMinimumWidth(300)
+
+        # Left column stacks mid + bottom; right is RunInfo ---
+        left_col = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_col)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.addWidget(mid_split, 1)
+        left_layout.addWidget(bot_split, 0)
+
+
+        right_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        right_split.addWidget(left_col)
+        right_split.addWidget(self.runinfo)
+        right_split.setStretchFactor(0, 5)
+        right_split.setStretchFactor(1, 2)
+
+
+        term_w = self.terminal.char_w * self.terminal.cols
+        actions_w = 360     # starting width for Actions/Rewards pane
+        runinfo_w = 340     # starting width for RunInfo
+
+        mid_split.setSizes([term_w, actions_w])
+        right_split.setSizes([term_w + actions_w + 40, runinfo_w])  # +40 ≈ splitter/scrollbar slop
+
+
+        # Compose everything
         v_layout = QtWidgets.QVBoxLayout()
         v_layout.addWidget(top_widget)
-        v_layout.addWidget(mid_split, 1)
-        v_layout.addWidget(bot_split, 0)
+        v_layout.addWidget(right_split, 1)
+
         container = QtWidgets.QWidget()
         container.setLayout(v_layout)
         self.setCentralWidget(container)
-        # Timer for auto-stepping
+
+        # Timer + latest status store
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_step)
         self._rewards_counter: defaultdict[str, float] = defaultdict(float)
+        self._latest_status: dict[str, object] = {}
 
     def _init_run(self) -> None:
         frame = self.controller.reset()
         self.terminal.set_frame(frame)
         self.actions.clear()
         self._rewards_counter.clear()
+
+        self._latest_status.clear()
+        self._refresh_runinfo()
         self._refresh_rewards()
 
     def _on_restart(self) -> None:
@@ -213,13 +310,14 @@ class NetHackWindow(QtWidgets.QMainWindow):
 
     def _on_step(self, action: Optional[int] = None) -> None:
         act = action if isinstance(action, int) and not isinstance(action, bool) else None
-        result = self.controller.step(act)
+        result : StepInfo = self.controller.step(act)
         if result is not None:
             assert isinstance(result, StepInfo), f"Expected StepInfo, got {type(result)}"
-            self.terminal.set_frame(result.frame)
+            self.terminal.set_frame(result.state)
             self._add_step(result)
             if result.ending is not None:
-                self._finish_episode(result.ending.name)
+                ending = result.ending.name if isinstance(result.ending, Enum) else str(result.ending)
+                self._finish_episode(ending)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         """Handle key presses for actions."""
@@ -251,11 +349,15 @@ class NetHackWindow(QtWidgets.QMainWindow):
 
     def _add_step(self, step: StepInfo) -> None:
         item = QtWidgets.QTreeWidgetItem([step.action, f"{step.reward:+.2f}"])
-        for lbl, val in step.labels:
+        for lbl, val in step.reward_labels:
             QtWidgets.QTreeWidgetItem(item, [f"• {lbl}", f"{val:+.2f}"])
             self._rewards_counter[lbl] += val
         self.actions.addTopLevelItem(item)
         self.actions.scrollToItem(item)
+
+        self._latest_status.update(step.state.as_dict())
+        self._refresh_runinfo()
+
         self._refresh_rewards()
 
     def _finish_episode(self, ending: str) -> None:
@@ -267,6 +369,8 @@ class NetHackWindow(QtWidgets.QMainWindow):
         self._populate(self.endings, cnt.most_common())
         self.actions.clear()
         self._rewards_counter.clear()
+        self._latest_status.clear()
+        self._refresh_runinfo()
         self._refresh_rewards()
         self._init_run()
 
@@ -291,6 +395,24 @@ class NetHackWindow(QtWidgets.QMainWindow):
             table.setItem(r, 1, QtWidgets.QTableWidgetItem(tbl_txt))
         table.resizeRowsToContents()
 
+    def _populate_kv(self, table: QtWidgets.QTableWidget, rows: List[Tuple[str, str]]) -> None:
+        table.setRowCount(len(rows))
+        for r, (k, v) in enumerate(rows):
+            table.setItem(r, 0, QtWidgets.QTableWidgetItem(k))
+            table.setItem(r, 1, QtWidgets.QTableWidgetItem(v))
+        table.resizeRowsToContents()
+
+    def _refresh_runinfo(self) -> None:
+        # show latest known status, sorted by key for stability
+        items = [(k, self._fmt_val(v)) for k, v in sorted(self._latest_status.items(), key=lambda kv: kv[0])]
+        self._populate_kv(self.runinfo, items)
+
+    @staticmethod
+    def _fmt_val(v: object) -> str:
+        if isinstance(v, float):
+            return f"{v:.3f}"
+        return str(v)
+
 # --------------------------------------------------------------------------- #
 #                                   Entrypoint                               #
 # --------------------------------------------------------------------------- #
@@ -306,26 +428,43 @@ def run_gui(controller: NethackController) -> None:
 #                         Example stub controller                           #
 # --------------------------------------------------------------------------- #
 if __name__ == '__main__':
+    class MockState:
+        """Mock state for demo purposes."""
+        def __init__(self):
+            self.tty_chars = ['.'*80]*24
+            self.tty_colors = [[7]*80 for _ in range(24)]
+            self.glyphs = [[0]*79 for _ in range(21)]
+
+        def as_dict(self):
+            """Return a mock state dictionary."""
+            return {
+                "steps": 0,
+                "pos": 0,
+                "hp": 20,
+                "dlvl": 1
+            }
+
     class DemoCtrl(NethackController):
         """Demo to ensure the UI renders."""
         def __init__(self):
             self.steps = 0
 
-        def reset(self) -> TerminalFrame:
+        def reset(self):
             self.steps = 0
-            return TerminalFrame(chars=['.'*80]*24, colors=[[7]*80 for _ in range(24)])
+            return MockState()
 
-        def step(self, action: Optional[int] = None) -> StepInfo:
+        def step(self, _: Optional[int] = None) -> StepInfo:
             time.sleep(0.05)
             self.steps += 1
             pos = self.steps % 80
-            chars = [ ''.join('@' if col==pos else '.' for col in range(80)) for _ in range(24) ]
-            colors = [[7]*80 for _ in range(24)]
-            frame = TerminalFrame(chars=chars, colors=colors)
+            frame = MockState()
+            frame.tty_chars = [''.join('@' if col == pos else '.' for col in range(80)) for _ in range(24)]
+            frame.tty_colors = [[7]*80 for _ in range(24)]
+            frame.glyphs = [[0]*79 for _ in range(21)]
+
             if self.steps < 50:
                 return StepInfo(frame, 'S', 0.0, [])
             if self.steps < 55:
-                return StepInfo(frame, 'N', 0.1, [('test',0.1)])
-            return StepInfo(frame, 'S', 1.0, [('test',1.0)], ending='DemoEnd')
-
+                return StepInfo(frame, 'N', 0.1, [('test', 0.1)])
+            return StepInfo(frame, 'S', 1.0, [('test', 1.0)], ending='DemoEnd')
     run_gui(DemoCtrl())

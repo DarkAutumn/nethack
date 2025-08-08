@@ -8,7 +8,7 @@ from yndf.wrapper_obs import NethackObsWrapper
 from yndf.wrapper_rewards import NethackRewardWrapper
 from yndf.wrapper_actions import NethackActionWrapper
 from yndf.wrapper_state import NethackStateWrapper
-from yndf.gui import NethackController, StepInfo, TerminalFrame, run_gui
+from yndf.gui import NethackController, StepInfo, run_gui
 
 from yndf.neural_network import NethackMaskablePolicy
 
@@ -28,6 +28,5 @@ __all__ = [
     NethackMaskablePolicy.__name__,
     run_gui.__name__,
     NethackController.__name__,
-    TerminalFrame.__name__,
     StepInfo.__name__,
     ]
