@@ -8,7 +8,7 @@ import yndf
 
 MOVE_ACTIONS = tuple(nethack.CompassDirection) # 8 directions
 DESCEND_ACTION = (nethack.MiscDirection.DOWN,) # '>'
-OTHER_ACTIONS = (nethack.Command.KICK, nethack.Command.SEARCH)
+OTHER_ACTIONS = (nethack.Command.KICK,)
 ACTIONS = MOVE_ACTIONS + DESCEND_ACTION + OTHER_ACTIONS
 
 def _make_env(_):
@@ -16,10 +16,10 @@ def _make_env(_):
         return gym.make("YenderFlow-v0", actions=ACTIONS)
     return _init
 
-def main(total_timesteps: int = 100_000, multiprocessing: bool = True):
+def main(total_timesteps: int = 1_000_000, multiprocessing: bool = True):
     """Trains an agent to play nethack."""
     if multiprocessing:
-        num_cpu = 8
+        num_cpu = 12
         envs = SubprocVecEnv([_make_env(i) for i in range(num_cpu)], start_method="fork")
         envs = VecMonitor(envs)
     else:

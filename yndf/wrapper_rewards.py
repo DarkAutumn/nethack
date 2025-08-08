@@ -3,6 +3,7 @@
 from enum import Enum
 import gymnasium as gym
 import numpy as np
+from nle import nethack
 from yndf.nethack_state import NethackState
 from yndf.movement import GlyphKind, SolidGlyphs
 
@@ -30,12 +31,15 @@ class Rewards:
     GOLD = Reward("gold", 0.05)
     SCORE = Reward("score", 0.01)
     REVEALED_TILE = Reward("revealed-tile", 0.01, max_value=0.05)
+    SUCCESS = Reward("success", 5.0)
 
 class Endings(Enum):
     """Enum for different types of endings."""
+    SUCCESS = 0
     DEATH = 1
     NO_DISCOVERY = 2
     NO_PATH = 3
+
 
 class NethackRewardWrapper(gym.Wrapper):
     """Convert NLE reward to a more useful form."""
@@ -43,6 +47,7 @@ class NethackRewardWrapper(gym.Wrapper):
         super().__init__(env)
         self._steps_since_new = 0
         self._prev : NethackState = None
+        self._has_search = nethack.Command.SEARCH in env.unwrapped.actions
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
@@ -121,8 +126,10 @@ class NethackRewardWrapper(gym.Wrapper):
                     info['ending'] = Endings.NO_DISCOVERY
 
             # do we have no way to make progress?
-            if not np.isin(state.glyph_kinds, [GlyphKind.EXIT.value, GlyphKind.FRONTIER.value]).any():
-                truncated = True
-                info['ending'] = Endings.NO_PATH
+            if not self._has_search:
+                if not np.isin(state.glyph_kinds, [GlyphKind.EXIT.value, GlyphKind.FRONTIER.value]).any():
+                    terminated = True
+                    info['ending'] = Endings.SUCCESS
+                    reward_list.append(Rewards.SUCCESS)
 
         return terminated, truncated
