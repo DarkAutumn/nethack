@@ -1,11 +1,11 @@
 import sys
 import gymnasium as gym
 from sb3_contrib import MaskablePPO
-import yndf
+import yndf.gui
 
 from train import ACTIONS
 
-class Controller(yndf.NethackController):
+class Controller(yndf.gui.NethackController):
     """A controller for the YenderFlow GUI debugger."""
 
     def __init__(self, env: gym.Env, model: MaskablePPO):
@@ -20,7 +20,7 @@ class Controller(yndf.NethackController):
         self.obs = obs
         return info["state"]
 
-    def step(self, action: int | None = None) -> yndf.StepInfo:
+    def step(self, action: int | None = None) -> yndf.gui.StepInfo:
         """Take a step in the game with the given action, returning StepInfo."""
 
         if action is None:
@@ -39,7 +39,7 @@ class Controller(yndf.NethackController):
         if (ending := info.get("ending", None)) is not None:
             assert terminated or truncated, "Episode should end if an ending is provided."
 
-        return yndf.StepInfo(info["state"], ACTIONS[action].name, reward, list(info.get('rewards', {}).items()), ending)
+        return yndf.gui.StepInfo(info["state"], ACTIONS[action].name, reward, list(info.get('rewards', {}).items()), ending)
 
 def main():
     """Run the YenderFlow GUI debugger."""
@@ -48,7 +48,7 @@ def main():
     model_path = sys.argv[1] if len(sys.argv) > 1 else "models/ppo_nethack_nav"
     env = gym.make("YenderFlow-v0", actions=ACTIONS)
     model = MaskablePPO.load(model_path, env=env)
-    yndf.run_gui(Controller(env, model=model))
+    yndf.gui.run_gui(Controller(env, model=model))
 
 if __name__ == "__main__":
     main()

@@ -8,7 +8,6 @@ from yndf.wrapper_obs import NethackObsWrapper
 from yndf.wrapper_rewards import NethackRewardWrapper
 from yndf.wrapper_actions import NethackActionWrapper
 from yndf.wrapper_state import NethackStateWrapper
-from yndf.gui import NethackController, StepInfo, run_gui
 
 from yndf.neural_network import NethackMaskablePolicy
 
@@ -26,7 +25,4 @@ gym.register(id="YenderFlow-v0", entry_point="yndf:create_env")
 __all__ = [
     NethackState.__name__,
     NethackMaskablePolicy.__name__,
-    run_gui.__name__,
-    NethackController.__name__,
-    StepInfo.__name__,
     ]
