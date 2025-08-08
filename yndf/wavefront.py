@@ -55,6 +55,8 @@ class PassableGlyphs(Enum):
     S_cloud     = 40 + nle.nethack.GLYPH_CMAP_OFF
     S_water     = 41 + nle.nethack.GLYPH_CMAP_OFF
 
+PLAYER_GLYPH = 333
+
 DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
               (0, -1),           (0, 1),
               (1, -1),  (1, 0),  (1, 1)]
@@ -86,7 +88,7 @@ def calculate_glyph_kinds(glyphs : np.ndarray, visited : np.ndarray) -> np.ndarr
     glyph_kinds = np.zeros_like(visited, dtype=np.uint8)
     for y in range(visited.shape[0]):
         for x in range(visited.shape[1]):
-            if glyphs[y, x] == SolidGlyphs.S_stone:
+            if glyphs[y, x] == SolidGlyphs.S_stone.value:
                 if has_surrounding(glyphs, visited, y, x, lambda g, v: g in PassableGlyphs and v):
                     # If we've concretely seen a stone tile, it is unpassable
                     glyph_kinds[y, x] = GlyphKind.UNPASSABLE.value
@@ -103,10 +105,10 @@ def calculate_glyph_kinds(glyphs : np.ndarray, visited : np.ndarray) -> np.ndarr
     # Now find frontier tiles. Replace passable tiles that are adjacent to UNSEEN.
     for y in range(visited.shape[0]):
         for x in range(visited.shape[1]):
-            if glyph_kinds[y, x] != GlyphKind.UNSEEN.value:
+            if glyph_kinds[y, x] != GlyphKind.PASSABLE.value:
                 continue
 
-            if has_surrounding(glyphs, visited, y, x, lambda g, v: g in PassableGlyphs and not v):
+            if has_surrounding(glyph_kinds, visited, y, x, lambda g, v: g == GlyphKind.UNSEEN.value and not v):
                 glyph_kinds[y, x] = GlyphKind.FRONTIER.value
 
     return glyph_kinds
