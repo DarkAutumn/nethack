@@ -31,7 +31,7 @@ class Rewards:
     GOLD = Reward("gold", 0.05)
     SCORE = Reward("score", 0.01)
     REVEALED_TILE = Reward("revealed-tile", 0.01, max_value=0.05)
-    SUCCESS = Reward("success", 5.0)
+    SUCCESS = Reward("success", 1.0)
 
 class Endings(Enum):
     """Enum for different types of endings."""
@@ -39,7 +39,6 @@ class Endings(Enum):
     DEATH = 1
     NO_DISCOVERY = 2
     NO_PATH = 3
-
 
 class NethackRewardWrapper(gym.Wrapper):
     """Convert NLE reward to a more useful form."""
