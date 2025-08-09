@@ -79,6 +79,7 @@ class GlyphKind(Enum):
 UNPASSABLE_WAVEFRONT = 1_000_000
 
 CLOSED_DOORS = (PassableGlyphs.S_vcdoor.value, PassableGlyphs.S_hcdoor.value)
+OPEN_DOORS = (PassableGlyphs.S_vodoor.value, PassableGlyphs.S_hodoor.value)
 
 def _manhattan_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
     """Calculate the Manhattan distance between two points."""
