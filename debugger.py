@@ -14,6 +14,13 @@ class Controller(yndf.gui.NethackController):
         self.model = model
         self.obs = None
 
+        self.action_masker = env
+        while not hasattr(self.action_masker, 'action_masks'):
+            if isinstance(self.action_masker, gym.Wrapper):
+                self.action_masker = self.action_masker.env
+            else:
+                raise ValueError("Environment does not support action masks.")
+
     def reset(self) -> yndf.NethackState:
         """Reset the controller to the initial state and return the first frame."""
         obs, info = self.env.reset()
@@ -25,7 +32,12 @@ class Controller(yndf.gui.NethackController):
 
         if action is None:
             # Predict a maskable action if none is provided
-            action, _ = self.model.predict(self.obs, deterministic=False)
+            action_mask = self.action_masker.action_masks()
+            if not any(action_mask):
+                raise ValueError("No valid actions available. Check the action mask.")
+
+            action, _ = self.model.predict(self.obs, deterministic=False, action_masks=action_mask)
+
         else:
             if action not in ACTIONS:
                 print(f"Invalid action: {action}. Must be one of {ACTIONS}.")
