@@ -178,8 +178,8 @@ class NethackState:
     def add_open_door(self, pos):
         """Add an open door position to the state."""
         if pos not in self.open_doors_not_visible:
-            assert self.floor_glyphs[pos] in OPEN_DOORS or not nethack.glyph_is_cmap(self.floor_glyphs[pos])
-            self.open_doors_not_visible.append(pos)
+            if not nethack.glyph_is_cmap(self.floor_glyphs[pos]):
+                self.open_doors_not_visible.append(pos)
 
     @property
     def is_player_on_exit(self):
