@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Tuple
+from typing import Iterable, List, Tuple
 import numpy as np
 import nle
 
@@ -115,47 +115,90 @@ def adjacent_to(glyphs : np.ndarray, y: int, x: int, kind) -> bool:
                 return True
     return False
 
-def has_surrounding(glyphs : np.ndarray, visited : np.ndarray, y: int, x: int, func : callable) -> bool:
-    """Check if the surrounding glyphs match the specified kind."""
-    for dy, dx in DIRECTIONS:
-        ny, nx = y + dy, x + dx
-        if (0 <= ny < glyphs.shape[0] and 0 <= nx < glyphs.shape[1]):
-            visit = visited[ny, nx]
-            glyph = glyphs[ny, nx]
-            if func(glyph, visit):
-                return True
+def _neighbors_any(mask: np.ndarray,
+                   directions: Iterable[Tuple[int, int]],
+                   out: np.ndarray | None = None) -> np.ndarray:
+    """
+    For each cell, returns True if ANY neighbor (in `directions`) has mask==True.
+    No wraparound; out-of-bounds neighbors are ignored.
+    Reuses `out` if provided (must be same shape, bool).
+    """
+    h, w = mask.shape
+    res = out if out is not None else np.zeros((h, w), dtype=bool)
+    res[...] = False
 
-    return False
+    for dy, dx in directions:
+        # source slices
+        if dy > 0:
+            sy = slice(dy, h)
+            dy_ = slice(0, h - dy)
+        elif dy < 0:
+            sy = slice(0, h + dy)
+            dy_ = slice(-dy, h)
+        else:
+            sy = slice(0, h)
+            dy_ = slice(0, h)
 
-def calculate_glyph_kinds(glyphs : np.ndarray, visited : np.ndarray) -> np.ndarray:
-    """Get a map of unseen stone tiles."""
-    glyph_kinds = np.zeros_like(visited, dtype=np.uint8)
-    for y in range(visited.shape[0]):
-        for x in range(visited.shape[1]):
-            if glyphs[y, x] == SolidGlyphs.S_stone.value:
-                if has_surrounding(glyphs, visited, y, x, lambda g, v: g in PassableGlyphs and v):
-                    # If we've concretely seen a stone tile, it is unpassable
-                    glyph_kinds[y, x] = GlyphKind.UNPASSABLE.value
-                else:
-                    glyph_kinds[y, x] = GlyphKind.UNSEEN.value
-            elif glyphs[y, x] in SolidGlyphs:
-                glyph_kinds[y, x] = GlyphKind.UNPASSABLE.value
-            elif glyphs[y, x] in (PassableGlyphs.S_dnladder.value, PassableGlyphs.S_dnstair.value):
-                glyph_kinds[y, x] = GlyphKind.EXIT.value
-            else:
-                glyph_kinds[y, x] = GlyphKind.PASSABLE.value
+        if dx > 0:
+            sx = slice(dx, w)
+            dx_ = slice(0, w - dx)
+        elif dx < 0:
+            sx = slice(0, w + dx)
+            dx_ = slice(-dx, w)
+        else:
+            sx = slice(0, w)
+            dx_ = slice(0, w)
+
+        res[dy_, dx_] |= mask[sy, sx]
+    return res
 
 
-    # Now find frontier tiles. Replace passable tiles that are adjacent to UNSEEN.
-    for y in range(visited.shape[0]):
-        for x in range(visited.shape[1]):
-            if glyph_kinds[y, x] != GlyphKind.PASSABLE.value:
-                continue
+def calculate_glyph_kinds(glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray:
+    """Calculate the glyph kinds for a given glyphs array and visited mask."""
+    # Ensure booleans are booleans
+    visited_bool = visited.astype(bool, copy=False)
 
-            if has_surrounding(glyph_kinds, visited, y, x, lambda g, v: g == GlyphKind.UNSEEN.value and not v):
-                glyph_kinds[y, x] = GlyphKind.FRONTIER.value
+    # ---- Precompute membership masks (uses enum integer codes) ----
+    stone_val = SolidGlyphs.S_stone.value
+    solid_vals = np.array([g.value for g in SolidGlyphs], dtype=glyphs.dtype)
+    exit_vals  = np.array([PassableGlyphs.S_dnladder.value,
+                           PassableGlyphs.S_dnstair.value], dtype=glyphs.dtype)
+    passable_vals = np.array([g.value for g in PassableGlyphs], dtype=glyphs.dtype)
 
-    return glyph_kinds
+    is_stone            = glyphs == stone_val
+    is_solid_nonstone   = np.isin(glyphs, solid_vals) & ~is_stone
+    is_exit             = np.isin(glyphs, exit_vals)
+    is_passable_glyph   = np.isin(glyphs, passable_vals)
+
+    # ---- Neighbor queries (vectorized) ----
+    # For stones: if any neighbor is (passable AND visited) -> UNPASSABLE else UNSEEN
+    mask_passable_and_visited = is_passable_glyph & visited_bool
+    seen_from_neighbor = _neighbors_any(mask_passable_and_visited, DIRECTIONS)
+
+    # ---- Initialize result as PASSABLE; then override by rule priority ----
+    gk = np.full(glyphs.shape, GlyphKind.PASSABLE.value, dtype=np.uint8)
+
+    # Exits
+    gk[is_exit] = GlyphKind.EXIT.value
+
+    # Non-stone solids are always UNPASSABLE
+    gk[is_solid_nonstone] = GlyphKind.UNPASSABLE.value
+
+    # Stone special rule
+    stone_seen    = is_stone & seen_from_neighbor
+    stone_unseen  = is_stone & ~seen_from_neighbor # pylint:disable=invalid-unary-operand-type
+    gk[stone_seen]   = GlyphKind.UNPASSABLE.value
+    gk[stone_unseen] = GlyphKind.UNSEEN.value
+
+    # ---- Frontier pass: PASSABLE tiles that touch UNSEEN & not visited ----
+    unseen_and_unvisited = (gk == GlyphKind.UNSEEN.value) & ~visited_bool
+    # Reuse a workspace array to avoid an extra allocation:
+    work = np.zeros_like(visited_bool)
+    touches_unseen = _neighbors_any(unseen_and_unvisited, DIRECTIONS, out=work)
+    frontier_mask = (gk == GlyphKind.PASSABLE.value) & touches_unseen
+    gk[frontier_mask] = GlyphKind.FRONTIER.value
+
+    return gk
 
 def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: List[tuple[int, int]]) -> np.ndarray:
     """Calculate the wavefront from a list of target locations.  Target values start at 0 and increase by 1 for each
