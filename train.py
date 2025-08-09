@@ -16,7 +16,7 @@ def _make_env(_):
         return gym.make("YenderFlow-v0", actions=ACTIONS)
     return _init
 
-def main(total_timesteps: int = 1_000_000, multiprocessing: bool = True):
+def main(total_timesteps: int = 10_000_000, multiprocessing: bool = True):
     """Trains an agent to play nethack."""
     if multiprocessing:
         num_cpu = 12
@@ -36,9 +36,14 @@ def main(total_timesteps: int = 1_000_000, multiprocessing: bool = True):
     )
 
     model.learn(total_timesteps=total_timesteps, progress_bar=True)
-    model.save("models/ppo_nethack_nav")
+    model.save(f"models/ppo_nethack_nav_{total_timesteps}")
 
     print("Training finished and model saved.")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1:
+        TIMESTEPS = int(sys.argv[1])
+    else:
+        TIMESTEPS = 10_000_000
+    main(total_timesteps=TIMESTEPS, multiprocessing=True)
