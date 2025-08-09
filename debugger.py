@@ -4,6 +4,7 @@ from sb3_contrib import MaskablePPO
 import yndf.gui
 
 from train import ACTIONS
+from yndf.wrapper_actions import UserInputAction
 
 class Controller(yndf.gui.NethackController):
     """A controller for the YenderFlow GUI debugger."""
@@ -39,11 +40,7 @@ class Controller(yndf.gui.NethackController):
             action, _ = self.model.predict(self.obs, deterministic=False, action_masks=action_mask)
 
         else:
-            if action not in ACTIONS:
-                print(f"Invalid action: {action}. Must be one of {ACTIONS}.")
-                return None
-
-            action = ACTIONS.index(action)
+            action = UserInputAction(action)
 
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.obs = obs
@@ -62,7 +59,12 @@ class Controller(yndf.gui.NethackController):
             "Locked Doors": state.locked_doors,
         }
 
-        return yndf.gui.StepInfo(state, ACTIONS[action].name, reward,
+        if isinstance(action, UserInputAction):
+            unwrapped_actions = self.env.unwrapped.actions
+            action = unwrapped_actions[unwrapped_actions.index(action.action)].name
+        else:
+            action = ACTIONS[action].name
+        return yndf.gui.StepInfo(state, action, reward,
                                  list(info.get('rewards', {}).items()), properties, ending)
 
 def main():

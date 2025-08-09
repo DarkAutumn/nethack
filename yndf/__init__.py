@@ -13,11 +13,14 @@ from yndf.neural_network import NethackMaskablePolicy
 
 def create_env(**kwargs) -> gym.Env:
     """Create a Nethack environment with the necessary wrappers."""
-    env = gym.make("NetHackScore-v0", **kwargs)
+    env = gym.make("NetHackScore-v0", actions=nle.nethack.ACTIONS)
+
+    actions = kwargs.get("actions", env.unwrapped.actions)
+    has_search = nle.nethack.Command.SEARCH in actions
     env = NethackStateWrapper(env)
     env = NethackObsWrapper(env)
-    env = NethackActionWrapper(env)
-    env = NethackRewardWrapper(env)
+    env = NethackActionWrapper(env, actions)
+    env = NethackRewardWrapper(env, has_search)
     return env
 
 gym.register(id="YenderFlow-v0", entry_point="yndf:create_env")
