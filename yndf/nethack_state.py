@@ -5,7 +5,7 @@ from typing import Optional
 from nle import nethack
 import numpy as np
 
-from yndf.movement import GlyphKind, calculate_wavefront_and_glyph_kinds
+from yndf.movement import CLOSED_DOORS, OPEN_DOORS, GlyphKind, calculate_wavefront_and_glyph_kinds
 
 class NethackPlayer:
     """Player state in Nethack."""
@@ -152,6 +152,34 @@ class NethackState:
             pos = (int(pos[0]), int(pos[1]))
             if pos not in self.found_exits:
                 self.found_exits.append(pos)
+
+        prev_is_usable = prev is not None and prev.player.depth == self.player.depth
+
+        self.locked_doors = prev.locked_doors.copy() if prev_is_usable else []
+        for lock in self.locked_doors:
+            if self.floor_glyphs[lock] not in CLOSED_DOORS:
+                self.locked_doors.remove(lock)
+
+        self.open_doors_not_visible = prev.open_doors_not_visible.copy() if prev_is_usable else []
+        for door in self.open_doors_not_visible:
+            # we expect the door to be covered by something other than geometry
+            if nethack.glyph_is_cmap(self.floor_glyphs[door]):
+                self.open_doors_not_visible.remove(door)
+                self.floor_glyphs[door] = self.glyphs[door]
+            else:
+                self.floor_glyphs[door] = OPEN_DOORS[0]  # assume it's an open door
+
+    def add_locked_door(self, pos):
+        """Add a locked door position to the state."""
+        if pos not in self.locked_doors:
+            assert self.floor_glyphs[pos] in CLOSED_DOORS
+            self.locked_doors.append(pos)
+
+    def add_open_door(self, pos):
+        """Add an open door position to the state."""
+        if pos not in self.open_doors_not_visible:
+            if not nethack.glyph_is_cmap(self.floor_glyphs[pos]):
+                self.open_doors_not_visible.append(pos)
 
     @property
     def is_player_on_exit(self):

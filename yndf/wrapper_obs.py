@@ -4,7 +4,7 @@ import gymnasium as gym
 import numpy as np
 
 from yndf.nethack_state import NethackState
-from yndf.wavefront import DIRECTIONS
+from yndf.movement import DIRECTIONS
 
 class NethackObsWrapper(gym.Wrapper):
     """Convert NLE observation → dict(glyphs, visited_mask, agent_yx)."""

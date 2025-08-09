@@ -8,17 +8,18 @@ import yndf
 
 MOVE_ACTIONS = tuple(nethack.CompassDirection) # 8 directions
 DESCEND_ACTION = (nethack.MiscDirection.DOWN,) # '>'
-ACTIONS = MOVE_ACTIONS + DESCEND_ACTION
+OTHER_ACTIONS = (nethack.Command.KICK,)
+ACTIONS = MOVE_ACTIONS + DESCEND_ACTION + OTHER_ACTIONS
 
 def _make_env(_):
     def _init():
         return gym.make("YenderFlow-v0", actions=ACTIONS)
     return _init
 
-def main(total_timesteps: int = 100_000, multiprocessing: bool = True):
+def main(total_timesteps: int = 10_000_000, multiprocessing: bool = True):
     """Trains an agent to play nethack."""
     if multiprocessing:
-        num_cpu = 8
+        num_cpu = 12
         envs = SubprocVecEnv([_make_env(i) for i in range(num_cpu)], start_method="fork")
         envs = VecMonitor(envs)
     else:
@@ -35,9 +36,14 @@ def main(total_timesteps: int = 100_000, multiprocessing: bool = True):
     )
 
     model.learn(total_timesteps=total_timesteps, progress_bar=True)
-    model.save("models/ppo_nethack_nav")
+    model.save(f"models/ppo_nethack_nav_{total_timesteps}")
 
     print("Training finished and model saved.")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1:
+        TIMESTEPS = int(sys.argv[1])
+    else:
+        TIMESTEPS = 10_000_000
+    main(total_timesteps=TIMESTEPS, multiprocessing=True)
