@@ -8,12 +8,23 @@ from yndf.nethack_state import NethackState
 
 from yndf.movement import DIRECTION_MAP, can_move, adjacent_to, CLOSED_DOORS
 
+class UserInputAction:
+    """A class to represent user input actions."""
+    def __init__(self, action: int):
+        self.action = action
+        self.chr = chr(action)
+
+    def __repr__(self):
+        return f"UserInputAction(action={self.action}, chr='{self.chr}')"
+
 class NethackActionWrapper(gym.Wrapper):
     """Convert NLE observation → dict(glyphs, visited_mask, agent_yx)."""
 
-    def __init__(self, env : gym.Env) -> None:
+    def __init__(self, env : gym.Env, actions) -> None:
         super().__init__(env)
-        actions = env.unwrapped.actions
+
+        self.action_space = gym.spaces.Discrete(len(actions))
+
         if nethack.MiscDirection.DOWN not in actions:
             self._descend_only = np.ones(len(actions), dtype=bool)
         else:
@@ -33,6 +44,12 @@ class NethackActionWrapper(gym.Wrapper):
 
         self._kick_index = actions.index(nethack.Command.KICK) if nethack.Command.KICK in actions else None
 
+        all_actions = self.unwrapped.actions
+        self.model_actions = actions
+        self._action_map = {}
+        for i, action in enumerate(actions):
+            self._action_map[i] = all_actions.index(action)
+
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
         self._state: NethackState = info["state"]
@@ -40,10 +57,25 @@ class NethackActionWrapper(gym.Wrapper):
         return obs, info
 
     def step(self, action):  # type: ignore[override]
+        action = self._translate_action(action)
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._state: NethackState = info["state"]
         info["action_mask"] = self.action_masks()
         return obs, reward, terminated, truncated, info
+
+    def _translate_action(self, action):
+        if isinstance(action, UserInputAction):
+            #if action.action not in
+            unwrapped_actions = self.unwrapped.actions
+            if action.action not in unwrapped_actions:
+                print(f"Invalid action: {action}. Must be one of {unwrapped_actions}.")
+                return None
+
+            action = unwrapped_actions.index(action.action)
+        else:
+            action = self._action_map.get(int(action), action)
+
+        return action
 
     def action_masks(self):
         """Return the action mask for the current state."""

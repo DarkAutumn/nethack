@@ -177,7 +177,12 @@ class TerminalWidget(QtWidgets.QWidget):
             row_chars = self.state.tty_chars[r]
             row_colors = self.state.tty_colors[r]
             for c in range(self.cols):
-                painter.setPen(ansi[row_colors[c]])
+                color_index = row_colors[c]
+                if color_index < 0 or color_index >= len(ansi):
+                    color = QtGui.QColor(238,130,238)
+                else:
+                    color = ansi[color_index]
+                painter.setPen(color)
                 # coerce uint8 / bytes to a one‐char str
                 val = row_chars[c]
                 if isinstance(val, str):

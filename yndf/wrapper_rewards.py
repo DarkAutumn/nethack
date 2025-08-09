@@ -3,7 +3,6 @@
 from enum import Enum
 import gymnasium as gym
 import numpy as np
-from nle import nethack
 from yndf.nethack_state import NethackState
 from yndf.movement import GlyphKind, SolidGlyphs
 
@@ -42,11 +41,11 @@ class Endings(Enum):
 
 class NethackRewardWrapper(gym.Wrapper):
     """Convert NLE reward to a more useful form."""
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, has_search: bool = False) -> None:
         super().__init__(env)
         self._steps_since_new = 0
         self._prev : NethackState = None
-        self._has_search = nethack.Command.SEARCH in env.unwrapped.actions
+        self._has_search = has_search
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
