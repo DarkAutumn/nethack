@@ -36,6 +36,7 @@ def main(
     parallel: int = 12,
     output_dir: str = "models/",
     log_dir: str = "logs/",
+    save_replays: bool = True
 ) -> None:
     """Train an agent to play NetHack.
 
@@ -53,7 +54,7 @@ def main(
 
     if parallel <= 1:
         n_envs = 1
-        env = gym.make("YenderFlow-v0", actions=ACTIONS)
+        env = gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=save_replays)
     else:
         n_envs = parallel
         env = SubprocVecEnv([_make_env(i) for i in range(n_envs)], start_method="fork")
@@ -109,6 +110,13 @@ if __name__ == "__main__":
         default="logs/",
         help='Directory for TensorBoard logs (default: "logs/").',
     )
+    parser.add_argument(
+        "--save-replays",
+        type=bool,
+        help="Save replays of the training episodes.",
+        default=True,
+    )
+
     args = parser.parse_args()
 
     main(
@@ -116,4 +124,5 @@ if __name__ == "__main__":
         parallel=args.parallel,
         output_dir=args.output,
         log_dir=args.log_dir,
+        save_replays=args.save_replays,
     )

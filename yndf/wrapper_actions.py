@@ -44,11 +44,11 @@ class NethackActionWrapper(gym.Wrapper):
 
         self._kick_index = actions.index(nethack.Command.KICK) if nethack.Command.KICK in actions else None
 
-        all_actions = self.unwrapped.actions
+        self._unwrapped_actions = self.unwrapped.actions
         self.model_actions = actions
         self._action_map = {}
         for i, action in enumerate(actions):
-            self._action_map[i] = all_actions.index(action)
+            self._action_map[i] = self._unwrapped_actions.index(action)
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
@@ -95,3 +95,11 @@ class NethackActionWrapper(gym.Wrapper):
             mask[self._kick_index] = adjacent_to(self._state.floor_glyphs, *self._state.player.position, CLOSED_DOORS)
 
         return mask
+
+    def translate_to_keycode(self, action: int) -> str:
+        """Translate an action index to a keypress character."""
+        if isinstance(action, UserInputAction):
+            return action.action
+
+        action = self._unwrapped_actions[action]
+        return action.value

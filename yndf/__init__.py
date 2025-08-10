@@ -8,6 +8,7 @@ from yndf.wrapper_obs import NethackObsWrapper
 from yndf.wrapper_rewards import NethackRewardWrapper
 from yndf.wrapper_actions import NethackActionWrapper
 from yndf.wrapper_state import NethackStateWrapper
+from yndf.wrapper_replay import NethackReplayWrapper
 
 from yndf.neural_network import NethackMaskablePolicy
 
@@ -17,10 +18,15 @@ def create_env(**kwargs) -> gym.Env:
 
     actions = kwargs.get("actions", env.unwrapped.actions)
     has_search = nle.nethack.Command.SEARCH in actions
+    save_replays = kwargs.get("save_replays", False)
+
     env = NethackStateWrapper(env)
     env = NethackObsWrapper(env)
-    env = NethackActionWrapper(env, actions)
+    action_wrapper = env = NethackActionWrapper(env, actions)
     env = NethackRewardWrapper(env, has_search)
+    if save_replays:
+        env = NethackReplayWrapper(env, action_wrapper)
+
     return env
 
 gym.register(id="YenderFlow-v0", entry_point="yndf:create_env")
