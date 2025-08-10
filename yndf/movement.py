@@ -235,10 +235,23 @@ def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: Li
 def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray:
     """Calculate the wavefront from a NethackState and a list of target locations."""
 
+
     glyph_kinds = calculate_glyph_kinds(floor_glyphs, visited)
-    targets = np.argwhere((glyph_kinds == GlyphKind.EXIT.value) | (glyph_kinds == GlyphKind.FRONTIER.value))
-    targets += [(y, x) for y in range(glyphs.shape[0])
-                    for x in range(glyphs.shape[1])
-                    if not visited[y, x] and not nle.nethack.glyph_is_cmap(glyphs[y, x]) and not nle.nethack.glyph_is_monster(glyphs[y, x])]
+
+    # existing targets (shape: [N, 2])
+    targets = np.argwhere(
+        (glyph_kinds == GlyphKind.EXIT.value) |
+        (glyph_kinds == GlyphKind.FRONTIER.value)
+    )
+
+    # BONUS: vectorized way (faster than Python loops)
+    is_cmap = np.vectorize(nle.nethack.glyph_is_cmap)
+    is_mon  = np.vectorize(nle.nethack.glyph_is_monster)
+    mask = (~visited.astype(bool)) & (~is_cmap(glyphs)) & (~is_mon(glyphs))
+    extra = np.argwhere(mask)  # shape: [M, 2], dtype=int64
+
+    if extra.size:
+        targets = np.concatenate([targets, extra], axis=0)
+
     wavefront = calculate_wavefront(floor_glyphs, glyph_kinds, targets)
     return wavefront, glyph_kinds
