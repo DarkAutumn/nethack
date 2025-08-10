@@ -14,7 +14,8 @@ class NethackReplayWrapper(gym.Wrapper):
         self._action_wrapper = action_wrapper
 
     def reset(self, **kwargs):
-        self._save_replay()
+        # don't save replay on reset
+        self._steps.clear()
 
         obs, info = self.env.reset(**kwargs)
         assert len(self._steps) == 0, "Replay steps should be cleared."
