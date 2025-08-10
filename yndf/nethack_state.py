@@ -150,7 +150,7 @@ class NethackState:
 
         self.visited[self.player.position] = 1
 
-        wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.floor_glyphs, self.visited)
+        wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.glyphs, self.floor_glyphs, self.visited)
         self.wavefront = wavefront
         self.glyph_kinds = glyph_kinds
 

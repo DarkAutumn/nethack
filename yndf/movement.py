@@ -232,9 +232,14 @@ def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: Li
 
     return wavefront
 
-def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray:
+def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray:
     """Calculate the wavefront from a NethackState and a list of target locations."""
-    glyph_kinds = calculate_glyph_kinds(glyphs, visited)
+
+    np.where()
+    glyph_kinds = calculate_glyph_kinds(floor_glyphs, visited)
     targets = np.argwhere((glyph_kinds == GlyphKind.EXIT.value) | (glyph_kinds == GlyphKind.FRONTIER.value))
-    wavefront = calculate_wavefront(glyphs, glyph_kinds, targets)
+    targets += [(y, x) for y in range(glyphs.shape[0])
+                    for x in range(glyphs.shape[1])
+                    if not visited[y, x] and not nle.nethack.glyph_is_cmap(glyphs[y, x])]
+    wavefront = calculate_wavefront(floor_glyphs, glyph_kinds, targets)
     return wavefront, glyph_kinds
