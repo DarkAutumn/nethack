@@ -240,6 +240,6 @@ def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.nda
     targets = np.argwhere((glyph_kinds == GlyphKind.EXIT.value) | (glyph_kinds == GlyphKind.FRONTIER.value))
     targets += [(y, x) for y in range(glyphs.shape[0])
                     for x in range(glyphs.shape[1])
-                    if not visited[y, x] and not nle.nethack.glyph_is_cmap(glyphs[y, x])]
+                    if not visited[y, x] and not nle.nethack.glyph_is_cmap(glyphs[y, x]) and not nle.nethack.glyph_is_monster(glyphs[y, x])]
     wavefront = calculate_wavefront(floor_glyphs, glyph_kinds, targets)
     return wavefront, glyph_kinds
