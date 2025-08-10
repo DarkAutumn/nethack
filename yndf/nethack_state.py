@@ -5,7 +5,7 @@ from typing import Optional
 from nle import nethack
 import numpy as np
 
-from yndf.movement import CLOSED_DOORS, OPEN_DOORS, GlyphKind, calculate_wavefront_and_glyph_kinds
+from yndf.movement import CLOSED_DOORS, OPEN_DOORS, GlyphKind, SolidGlyphs, calculate_wavefront_and_glyph_kinds
 
 class NethackPlayer:
     """Player state in Nethack."""
@@ -243,6 +243,8 @@ class NethackState:
             for x in range(glyphs.shape[1]):
                 glyph = glyphs[y, x]
                 if nethack.glyph_is_monster(glyph) or nethack.glyph_is_object(glyph):
-                    floor_glyphs[y, x] = prev.floor_glyphs[y, x]
+                    prev_glyph = prev.floor_glyphs[y, x]
+                    if prev_glyph != SolidGlyphs.S_stone.value:
+                        floor_glyphs[y, x] = prev_glyph
 
         return floor_glyphs
