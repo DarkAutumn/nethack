@@ -145,6 +145,7 @@ class TerminalWidget(QtWidgets.QWidget):
 
         tooltip = []
 
+        tooltip.append(self.state.get_screen_description((gy, gx)))
         tooltip.append(f"Pos: ({gy}, {gx})")
         tooltip.append(f"Glyph: {str(self.state.glyphs[gy][gx])}, Char: {ch}, Color: {color}")
         tooltip.append(f"Floor Glyph: {self.state.floor_glyphs[gy, gx]}")

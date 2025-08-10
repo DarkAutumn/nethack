@@ -12,16 +12,17 @@ class NethackPlayer:
     # pylint: disable=no-member
 
     def __init__(self, obs):
-        self.position = (int(obs['blstats'][1]), int(obs['blstats'][0]))  # (y, x) coords of the player
-        self.score = obs['blstats'][nethack.NLE_BL_SCORE]
-        self.gold = obs['blstats'][nethack.NLE_BL_GOLD]
-        self.hp = obs['blstats'][nethack.NLE_BL_HP]
-        self.hp_max = obs['blstats'][nethack.NLE_BL_HPMAX]
-        self.level = obs['blstats'][nethack.NLE_BL_XP]
-        self.depth = obs['blstats'][nethack.NLE_BL_DEPTH]
-        self.exp = obs['blstats'][nethack.NLE_BL_EXP]
-        self.hunger = obs['blstats'][nethack.NLE_BL_HUNGER]
-        self._conditions = obs['blstats'][nethack.NLE_BL_CONDITION]
+        blstats = obs['blstats']
+        self.position = (int(blstats[1]), int(blstats[0]))  # (y, x) coords of the player
+        self.score = blstats[nethack.NLE_BL_SCORE]
+        self.gold = blstats[nethack.NLE_BL_GOLD]
+        self.hp = blstats[nethack.NLE_BL_HP]
+        self.hp_max = blstats[nethack.NLE_BL_HPMAX]
+        self.level = blstats[nethack.NLE_BL_XP]
+        self.depth = blstats[nethack.NLE_BL_DEPTH]
+        self.exp = blstats[nethack.NLE_BL_EXP]
+        self.hunger = blstats[nethack.NLE_BL_HUNGER]
+        self._conditions = blstats[nethack.NLE_BL_CONDITION]
 
     @property
     def is_confused(self):
@@ -121,19 +122,26 @@ class NethackPlayer:
             "status": status,
         }
 
+class OriginalObservationInfo:
+    """Original NLE observation."""
+    # pylint: disable=no-member
+
+    def __init__(self, obs, info):
+        self.observation = obs.copy()
+        self.info = info.copy()
+
 class NethackState:
     """World state in Nethack."""
     # pylint: disable=no-member
 
-    def __init__(self, obs, prev : Optional['NethackState'] = None):
+    def __init__(self, obs, info, prev: Optional['NethackState'] = None):
+        self.original = OriginalObservationInfo(obs, info)
+
         self.player = NethackPlayer(obs)
+
         self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
         self.time = obs['blstats'][nethack.NLE_BL_TIME]
-        self.tty_chars = obs['tty_chars'].copy()
-        self.tty_colors = obs['tty_colors'].copy()
-        self.chars = obs['chars'].copy()
-        self.glyphs = obs['glyphs'].copy()
-        self.floor_glyphs = self._create_floor_glyphs(obs['glyphs'], prev)
+        self.floor_glyphs = self._create_floor_glyphs(self.glyphs, prev)
 
         if prev is not None and self.player.depth == prev.player.depth:
             self.visited = prev.visited.copy()
@@ -168,6 +176,31 @@ class NethackState:
                 self.floor_glyphs[door] = self.glyphs[door]
             else:
                 self.floor_glyphs[door] = OPEN_DOORS[0]  # assume it's an open door
+
+    @property
+    def tty_chars(self):
+        """Return the TTY characters from the observation."""
+        return self.original.observation['tty_chars']
+
+    @property
+    def tty_colors(self):
+        """Return the TTY colors from the observation."""
+        return self.original.observation['tty_colors']
+
+    @property
+    def chars(self):
+        """Return the characters from the observation."""
+        return self.original.observation['chars']
+
+    @property
+    def glyphs(self):
+        """Return the glyphs from the observation."""
+        return self.original.observation['glyphs']
+
+    def get_screen_description(self, pos):
+        """Returns a string description of the glyph at the given position."""
+        y, x = pos
+        return self.original.observation['screen_descriptions'][y, x].tobytes().decode('utf-8').rstrip('\x00')
 
     def add_locked_door(self, pos):
         """Add a locked door position to the state."""
