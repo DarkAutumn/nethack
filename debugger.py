@@ -80,7 +80,6 @@ def main():
     parser = argparse.ArgumentParser(description="Run the YenderFlow GUI debugger.")
     parser.add_argument(
         "model_path",
-        nargs="?",
         default="models/",
         help="Path to a trained model (.zip or base name).",
     )
