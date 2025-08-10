@@ -11,6 +11,7 @@ to be the same shape (24 rows x 80 columns).
 """
 from __future__ import annotations
 from enum import Enum
+from pathlib import Path
 import sys
 import time
 from collections import Counter, defaultdict
@@ -55,6 +56,11 @@ class NethackController:
     def step(self, action: Optional[int] = None) -> StepInfo:
         """Take a step in the simulation."""
         raise NotImplementedError
+
+    def set_model(self, model_path: str) -> None:
+        """Set the current model path for the controller."""
+        raise NotImplementedError
+
 
 # --------------------------------------------------------------------------- #
 #                               Terminal widget                               #
@@ -139,6 +145,7 @@ class TerminalWidget(QtWidgets.QWidget):
 
         tooltip = []
 
+        tooltip.append(self.state.get_screen_description((gy, gx)))
         tooltip.append(f"Pos: ({gy}, {gx})")
         tooltip.append(f"Glyph: {str(self.state.glyphs[gy][gx])}, Char: {ch}, Color: {color}")
         tooltip.append(f"Floor Glyph: {self.state.floor_glyphs[gy, gx]}")
@@ -199,9 +206,10 @@ class TerminalWidget(QtWidgets.QWidget):
 
 class NetHackWindow(QtWidgets.QMainWindow):
     """Main window for the NetHack debugger."""
-    def __init__(self, controller: NethackController) -> None:
+    def __init__(self, controller: NethackController, model_path : str) -> None:
         super().__init__()
         self.controller = controller
+        self.model_path: Path | None = Path(model_path) if model_path else None
         self.paused = True
         self._build_ui()
         self._init_run()
@@ -209,11 +217,17 @@ class NetHackWindow(QtWidgets.QMainWindow):
     def _build_ui(self) -> None:
         self.setWindowTitle("NetHack RL GUI")
         self.resize(1400, 900)
-        # Top button bar (fixed height)
+
+        top_layout = QtWidgets.QHBoxLayout()
+
+        self.model_select = QtWidgets.QComboBox()
+        self.model_select.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.model_select.setToolTip("Select a model (.zip)")
+        top_layout.addWidget(self.model_select)
+
         buttons = [("Restart", self._on_restart),
                    ("Play ▷", self._on_play_pause),
                    ("Step ➔", self._on_step)]
-        top_layout = QtWidgets.QHBoxLayout()
         for label, handler in buttons:
             btn = QtWidgets.QPushButton(label)
             btn.clicked.connect(handler)
@@ -288,6 +302,9 @@ class NetHackWindow(QtWidgets.QMainWindow):
         self._timer.timeout.connect(self._on_step)
         self._rewards_counter: defaultdict[str, float] = defaultdict(float)
         self._latest_status: dict[str, object] = {}
+
+        self._populate_model_dropdown()
+        self.model_select.currentTextChanged.connect(self._on_model_selected)
 
     def _init_run(self) -> None:
         frame = self.controller.reset()
@@ -422,14 +439,44 @@ class NetHackWindow(QtWidgets.QMainWindow):
             return f"{v:.3f}"
         return str(v)
 
+    def _populate_model_dropdown(self) -> None:  # NEW
+        """Fill the model dropdown with .zip files from model_path."""
+        if not hasattr(self, "model_select"):
+            return
+        self.model_select.blockSignals(True)
+        self.model_select.clear()
+
+        names: list[str] = []
+        if self.model_path and self.model_path.exists():
+            names = sorted([p.name for p in self.model_path.glob("*.zip")])
+
+        self.model_select.addItems(names)
+        self.model_select.setEnabled(bool(names))
+        self.model_select.blockSignals(False)
+
+        if names:
+            # Default to the longest filename
+            idx = max(range(len(names)), key=lambda i: len(names[i]))
+            self.model_select.setCurrentIndex(idx)
+            # Explicitly set model on initial selection
+            self._on_model_selected(names[idx])
+
+    def _on_model_selected(self, name: str) -> None:  # NEW
+        """Handle model selection change from the dropdown."""
+        if not name or not self.model_path:
+            return
+        full_path = str(self.model_path / name)
+        if hasattr(self.controller, "set_model"):
+            self.controller.set_model(full_path)
+
 # --------------------------------------------------------------------------- #
 #                                   Entrypoint                               #
 # --------------------------------------------------------------------------- #
 
-def run_gui(controller: NethackController) -> None:
+def run_gui(controller: NethackController, model_path: str) -> None:
     """Run the NetHack GUI debugger with the given controller."""
     app = QtWidgets.QApplication(sys.argv)
-    win = NetHackWindow(controller)
+    win = NetHackWindow(controller, model_path)
     win.show()
     sys.exit(app.exec())
 
@@ -476,4 +523,8 @@ if __name__ == '__main__':
             if self.steps < 55:
                 return StepInfo(frame, 'N', 0.1, [('test', 0.1)], {"Actions": [], "Disallowed": []})
             return StepInfo(frame, 'S', 1.0, [('test', 1.0)], {"Actions": [], "Disallowed": []}, ending='DemoEnd')
-    run_gui(DemoCtrl())
+
+        def set_model(self, model_path: str) -> None:
+            print(f"Model set to: {model_path}")
+
+    run_gui(DemoCtrl(), model_path="models/")

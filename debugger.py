@@ -1,4 +1,5 @@
-import sys
+"""YenderFlow GUI Debugger for NetHack RL"""
+import argparse
 import gymnasium as gym
 from sb3_contrib import MaskablePPO
 import yndf.gui
@@ -9,10 +10,10 @@ from yndf.wrapper_actions import UserInputAction
 class Controller(yndf.gui.NethackController):
     """A controller for the YenderFlow GUI debugger."""
 
-    def __init__(self, env: gym.Env, model: MaskablePPO):
+    def __init__(self, env: gym.Env):
         super().__init__()
         self.env = env
-        self.model = model
+        self.model = None
         self.obs = None
 
         self.action_masker = env
@@ -33,6 +34,9 @@ class Controller(yndf.gui.NethackController):
 
         if action is None:
             # Predict a maskable action if none is provided
+            if self.model is None:
+                print("No model set. Please set a model using set_model().")
+
             action_mask = self.action_masker.action_masks()
             if not any(action_mask):
                 raise ValueError("No valid actions available. Check the action mask.")
@@ -67,14 +71,22 @@ class Controller(yndf.gui.NethackController):
         return yndf.gui.StepInfo(state, action, reward,
                                  list(info.get('rewards', {}).items()), properties, ending)
 
+    def set_model(self, model_path: str) -> None:
+        """Set the current model path for the controller."""
+        self.model = MaskablePPO.load(model_path, env=self.env)
+
 def main():
     """Run the YenderFlow GUI debugger."""
-    env = gym.make("YenderFlow-v0", actions=ACTIONS)
+    parser = argparse.ArgumentParser(description="Run the YenderFlow GUI debugger.")
+    parser.add_argument(
+        "model_path",
+        default="models/",
+        help="Path to a trained model (.zip or base name).",
+    )
+    args = parser.parse_args()
 
-    model_path = sys.argv[1] if len(sys.argv) > 1 else "models/ppo_nethack_nav"
     env = gym.make("YenderFlow-v0", actions=ACTIONS)
-    model = MaskablePPO.load(model_path, env=env)
-    yndf.gui.run_gui(Controller(env, model=model))
+    yndf.gui.run_gui(Controller(env), model_path=args.model_path)
 
 if __name__ == "__main__":
     main()
