@@ -235,7 +235,6 @@ def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: Li
 def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray:
     """Calculate the wavefront from a NethackState and a list of target locations."""
 
-    np.where()
     glyph_kinds = calculate_glyph_kinds(floor_glyphs, visited)
     targets = np.argwhere((glyph_kinds == GlyphKind.EXIT.value) | (glyph_kinds == GlyphKind.FRONTIER.value))
     targets += [(y, x) for y in range(glyphs.shape[0])
