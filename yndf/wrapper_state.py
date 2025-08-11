@@ -41,6 +41,11 @@ class NethackStateWrapper(gym.Wrapper):
         if self._current_state.message == "You can't move diagonally out of an intact doorway.":
             self._current_state.add_open_door(self._current_state.player.position)
 
+        if self._current_state.message == "You try to move the boulder, but in vain.":
+            # If the player tried to move a boulder and can't, we need to disallow that action
+            self._current_state.add_stuck_boulder(self._current_state.player.position,
+                                                  self._get_target_position(action))
+
         return obs, reward, terminated, truncated, info
 
     def _get_target_position(self, action):

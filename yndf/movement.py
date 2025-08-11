@@ -233,11 +233,19 @@ def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: Li
     return wavefront
 
 def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray,
-                                        visited: np.ndarray) -> np.ndarray:
+                                        visited: np.ndarray, unpassable: List[Tuple[int, int]]) -> np.ndarray:
     """Calculate the wavefront from a NethackState and a list of target locations."""
 
     # pylint: disable=no-member
     glyph_kinds = calculate_glyph_kinds(floor_glyphs, visited)
+    # if there are impassible tiles, we need to change glyph_kinds to unpassable
+    if unpassable:
+        unpassable_mask = np.zeros(glyph_kinds.shape, dtype=bool)
+        for y, x in unpassable:
+            if 0 <= y < glyph_kinds.shape[0] and 0 <= x < glyph_kinds.shape[1]:
+                unpassable_mask[y, x] = True
+        glyph_kinds[unpassable_mask] = GlyphKind.UNPASSABLE.value
+
 
     # existing targets (shape: [N, 2])
     targets = np.argwhere(

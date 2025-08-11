@@ -129,6 +129,15 @@ class OriginalObservationInfo:
     def __init__(self, obs, info):
         self.observation = obs.copy()
         self.info = info.copy()
+class StuckBoulder:
+    """A boulder that is stuck in a position."""
+    BOULDER_GLYPH = 2353
+    def __init__(self, player_position, boulder_position):
+        self.player_position = player_position
+        self.boulder_position = boulder_position
+
+    def __repr__(self):
+        return f"StuckBoulder(player_position={self.player_position}, boulder_position={self.boulder_position})"
 
 class NethackState:
     """World state in Nethack."""
@@ -143,25 +152,34 @@ class NethackState:
         self.time = obs['blstats'][nethack.NLE_BL_TIME]
         self.floor_glyphs = self._create_floor_glyphs(self.glyphs, prev)
 
-        if prev is not None and self.player.depth == prev.player.depth:
+        prev_is_usable = prev is not None and prev.player.depth == self.player.depth
+        if prev_is_usable:
             self.visited = prev.visited.copy()
         else:
             self.visited: np.ndarray = np.zeros((21, 79), dtype=np.uint8)
 
         self.visited[self.player.position] = 1
 
-        wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.glyphs, self.floor_glyphs, self.visited)
+        self.stuck_boulders = prev.stuck_boulders.copy() if prev_is_usable else []
+        for boulder in self.stuck_boulders:
+            if self.glyphs[boulder.boulder_position] != StuckBoulder.BOULDER_GLYPH:
+                self.stuck_boulders.remove(boulder)
+
+        unpassable = [boulder.boulder_position
+                      for boulder in self.stuck_boulders
+                      if boulder.player_position == self.player.position] if self.stuck_boulders else []
+
+        wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.glyphs, self.floor_glyphs,
+                                                                     self.visited, unpassable)
         self.wavefront = wavefront
         self.glyph_kinds = glyph_kinds
 
-        self.found_exits = prev.found_exits.copy() if prev is not None else []
+        self.found_exits = prev.found_exits.copy() if prev_is_usable else []
         exits = glyph_kinds == GlyphKind.EXIT.value
         for pos in np.argwhere(exits):
             pos = (int(pos[0]), int(pos[1]))
             if pos not in self.found_exits:
                 self.found_exits.append(pos)
-
-        prev_is_usable = prev is not None and prev.player.depth == self.player.depth
 
         self.locked_doors = prev.locked_doors.copy() if prev_is_usable else []
         for lock in self.locked_doors:
@@ -213,6 +231,11 @@ class NethackState:
         if pos not in self.open_doors_not_visible:
             if not nethack.glyph_is_cmap(self.floor_glyphs[pos]):
                 self.open_doors_not_visible.append(pos)
+
+    def add_stuck_boulder(self, player_position, boulder_position):
+        """Add a stuck boulder to the state."""
+        if not any(boulder.boulder_position == boulder_position for boulder in self.stuck_boulders):
+            self.stuck_boulders.append(StuckBoulder(player_position, boulder_position))
 
     @property
     def is_player_on_exit(self):

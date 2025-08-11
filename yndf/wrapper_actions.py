@@ -8,9 +8,6 @@ from yndf.nethack_state import NethackState
 
 from yndf.movement import DIRECTION_MAP, can_move, adjacent_to, CLOSED_DOORS
 
-BOULDER_GLYPH = 2353
-BOULDER_MESSAGE = "You try to move the boulder, but in vain."
-
 class UserInputAction:
     """A class to represent user input actions."""
     def __init__(self, action: int):
@@ -19,35 +16,6 @@ class UserInputAction:
 
     def __repr__(self):
         return f"UserInputAction(action={self.action}, chr='{self.chr}')"
-
-class DisallowedMove:
-    """A way to prevent a movement when certain conditions are met."""
-    def __init__(self, position, action):
-        self.position = position
-        self.action = action
-
-    def is_still_in_effect(self, _: NethackState) -> bool:
-        """Check if the rule is in effect."""
-        return True
-
-    def does_apply(self, _: NethackState) -> bool:
-        """Check if the rule applies."""
-        return True
-
-class BoulderMove(DisallowedMove):
-    """A way to prevent a boulder move."""
-    def __init__(self, position, action):
-        super().__init__(position, action)
-        dy, dx = DIRECTION_MAP[action]
-        self._boulder_position = position[0] + dy, position[1] + dx
-
-    def is_still_in_effect(self, state: NethackState) -> bool:
-        """Check if the rule is in effect."""
-        return state.glyphs[self._boulder_position] == BOULDER_GLYPH
-
-    def does_apply(self, state: NethackState) -> bool:
-        """Check if the rule applies."""
-        return state.player.position == self.position and state.glyphs[self._boulder_position] == BOULDER_GLYPH
 
 class NethackActionWrapper(gym.Wrapper):
     """Convert NLE observation → dict(glyphs, visited_mask, agent_yx)."""
@@ -95,11 +63,6 @@ class NethackActionWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._state: NethackState = info["state"]
 
-        if self._state.message == BOULDER_MESSAGE:
-            # If the player tried to move a boulder, we need to disallow that action
-            disallowed = BoulderMove(self._state.player.position, self.model_actions[action])
-            self._disallowed_moves.append(disallowed)
-
         info["action_mask"] = self.action_masks()
         return obs, reward, terminated, truncated, info
 
@@ -122,12 +85,19 @@ class NethackActionWrapper(gym.Wrapper):
         mask = self._descend_only.copy() if self._state.is_player_on_exit else self._all_but_descend.copy()
 
         # Apply movement direction masks
+        boulders = [boulder
+                    for boulder in self._state.stuck_boulders
+                    if boulder.player_position == self._state.player.position]
+
         for index, (dy, dx) in self._action_directions.items():
             ny, nx = self._state.player.position[0] + dy, self._state.player.position[1] + dx
             if not can_move(self._state.floor_glyphs, self._state.player.position, (ny, nx)):
                 mask[index] = False
             elif (ny, nx) in self._state.locked_doors:
                 assert index != self._kick_index
+                mask[index] = False
+            elif boulders and any(boulder.boulder_position == (ny, nx) for boulder in boulders):
+                # If the player is trying to move a stuck boulder, we need to disallow that action
                 mask[index] = False
 
         if self._kick_index is not None:
