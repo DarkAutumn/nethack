@@ -1,0 +1,8 @@
+nle
+stable-baselines3[extra]
+torch
+gymnasium
+numpy
+sb3-contrib
+PySide6
+tensorboard
