@@ -234,35 +234,51 @@ def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: Li
 
     return wavefront
 
+def _get_interesting_tiles(glyphs, visited, unpassable_mask):
+    """Returns tiles with glyphs that have objects on them."""
+    # pylint: disable=no-member
+    is_cmap = np.vectorize(nle.nethack.glyph_is_cmap)
+    is_mon  = np.vectorize(nle.nethack.glyph_is_monster)
+    mask = (~visited.astype(bool)) & (~is_cmap(glyphs)) & (~is_mon(glyphs)) & (~unpassable_mask)
+    extra = np.argwhere(mask)
+    return extra
+
+def _get_exit_targets(floor_glyphs, glyph_kinds, frontier, of_interest):
+    """Gets exit tile targets if there are no interesting tiles to explore."""
+    if of_interest.size > 0:
+        return np.empty((0, 2), dtype=int)
+
+    door_min = PassableGlyphs.S_ndoor.value
+    door_max = PassableGlyphs.S_darkroom.value
+    frontier_floor_vals = floor_glyphs[frontier]
+    has_relevant_frontier = np.any((frontier_floor_vals >= door_min) & (frontier_floor_vals <= door_max))
+
+    if has_relevant_frontier:
+        exit_targets = np.empty((0, 2), dtype=int)
+    else:
+        exit_tiles = glyph_kinds == GlyphKind.EXIT.value
+        exit_targets = np.argwhere(exit_tiles)
+    return exit_targets
+
 def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray,
                                         visited: np.ndarray, unpassable: List[Tuple[int, int]]) -> np.ndarray:
     """Calculate the wavefront from a NethackState and a list of target locations."""
-
-    # pylint: disable=no-member
     glyph_kinds = calculate_glyph_kinds(floor_glyphs, visited)
-    # if there are impassible tiles, we need to change glyph_kinds to unpassable
+    unpassable_mask = np.zeros(glyph_kinds.shape, dtype=bool)
+
     if unpassable:
-        unpassable_mask = np.zeros(glyph_kinds.shape, dtype=bool)
         for y, x in unpassable:
             if 0 <= y < glyph_kinds.shape[0] and 0 <= x < glyph_kinds.shape[1]:
                 unpassable_mask[y, x] = True
         glyph_kinds[unpassable_mask] = GlyphKind.UNPASSABLE.value
 
+    frontier = glyph_kinds == GlyphKind.FRONTIER.value
 
-    # existing targets (shape: [N, 2])
-    targets = np.argwhere(
-        (glyph_kinds == GlyphKind.EXIT.value) |
-        (glyph_kinds == GlyphKind.FRONTIER.value)
-    )
+    frontier_targets = np.argwhere(frontier)
+    of_interest = _get_interesting_tiles(glyphs, visited, unpassable_mask)
+    exit_targets = _get_exit_targets(floor_glyphs, glyph_kinds, frontier, of_interest)
 
-    # BONUS: vectorized way (faster than Python loops)
-    is_cmap = np.vectorize(nle.nethack.glyph_is_cmap)
-    is_mon  = np.vectorize(nle.nethack.glyph_is_monster)
-    mask = (~visited.astype(bool)) & (~is_cmap(glyphs)) & (~is_mon(glyphs))
-    extra = np.argwhere(mask)  # shape: [M, 2], dtype=int64
-
-    if extra.size:
-        targets = np.concatenate([targets, extra], axis=0)
-
+    targets = np.concatenate([frontier_targets, of_interest, exit_targets], axis=0)
     wavefront = calculate_wavefront(floor_glyphs, glyph_kinds, targets)
+
     return wavefront, glyph_kinds
