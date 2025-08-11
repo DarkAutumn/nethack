@@ -222,7 +222,7 @@ def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: Li
             if not (0 <= ny < wavefront.shape[0] and 0 <= nx < wavefront.shape[1]):
                 continue
 
-            if glyph_kinds[ny, nx] not in (GlyphKind.PASSABLE.value, GlyphKind.FRONTIER.value):
+            if glyph_kinds[ny, nx] not in (GlyphKind.PASSABLE.value, GlyphKind.FRONTIER.value, GlyphKind.EXIT.value):
                 continue
 
             if not can_move(glyphs, (y, x), (ny, nx)):
@@ -258,6 +258,7 @@ def _get_exit_targets(floor_glyphs, glyph_kinds, frontier, of_interest):
     else:
         exit_tiles = glyph_kinds == GlyphKind.EXIT.value
         exit_targets = np.argwhere(exit_tiles)
+
     return exit_targets
 
 def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray,
