@@ -25,16 +25,6 @@ class NethackActionWrapper(gym.Wrapper):
 
         self.action_space = gym.spaces.Discrete(len(actions))
 
-        if nethack.MiscDirection.DOWN not in actions:
-            self._descend_only = np.ones(len(actions), dtype=bool)
-        else:
-            self._descend_only = np.zeros(len(actions), dtype=bool)
-            self._descend_only[actions.index(nethack.MiscDirection.DOWN)] = True
-
-        self._all_but_descend = np.ones(len(actions), dtype=bool)
-        if nethack.MiscDirection.DOWN in actions:
-            self._all_but_descend[actions.index(nethack.MiscDirection.DOWN)] = False
-
         self._state: NethackState = None
         self._action_directions = {}
         for direction, (dy, dx) in DIRECTION_MAP.items():
@@ -42,7 +32,8 @@ class NethackActionWrapper(gym.Wrapper):
                 continue
             self._action_directions[actions.index(direction)] = (dy, dx)
 
-        self.kick_index = actions.index(nethack.Command.KICK) if nethack.Command.KICK in actions else None
+        self.kick_index = self._get_index_or_none(nethack.Command.KICK, actions)
+        self._descend_index = self._get_index_or_none(nethack.MiscDirection.DOWN, actions)
 
         self._unwrapped_actions = self.unwrapped.actions
         self.model_actions = actions
@@ -66,6 +57,11 @@ class NethackActionWrapper(gym.Wrapper):
         info["action_mask"] = self.action_masks()
         return obs, reward, terminated, truncated, info
 
+    def _get_index_or_none(self, action, actions):
+        if action in actions:
+            return actions.index(action)
+        return None
+
     def _translate_action(self, action):
         if isinstance(action, UserInputAction):
             #if action.action not in
@@ -82,7 +78,9 @@ class NethackActionWrapper(gym.Wrapper):
 
     def action_masks(self):
         """Return the action mask for the current state."""
-        mask = self._descend_only.copy() if self._state.is_player_on_exit else self._all_but_descend.copy()
+        mask = np.ones(self.action_space.n, dtype=bool)
+        if self._descend_index is not None:
+            mask[self._descend_index] = self._state.is_player_on_exit
 
         # Apply movement direction masks
         boulders = [boulder

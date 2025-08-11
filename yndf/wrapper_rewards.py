@@ -23,7 +23,7 @@ class Rewards:
     """Enum for different types of rewards for the agent."""
     HURT = Reward("took-damage", -0.05)
     KILL = Reward("kill-enemy", 0.05)
-    DESCENDED = Reward("descended", 0.5)
+    DESCENDED = Reward("descended", 1.0)
     SECRET = Reward("secret", 0.1)
     DEATH = Reward("death", -5.0)
     LEVEL_UP = Reward("level-up", 0.5)
