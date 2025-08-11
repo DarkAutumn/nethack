@@ -7,6 +7,16 @@ import yndf.gui
 from train import ACTIONS
 from yndf.wrapper_actions import UserInputAction
 
+def get_action_masker(env: gym.Env) -> gym.Wrapper:
+    """Get the action masker from the environment."""
+    action_masker = env
+    while not hasattr(action_masker, 'action_masks'):
+        if isinstance(action_masker, gym.Wrapper):
+            action_masker = action_masker.env
+        else:
+            raise ValueError("Environment does not support action masks.")
+    return action_masker
+
 class Controller(yndf.gui.NethackController):
     """A controller for the YenderFlow GUI debugger."""
 
@@ -16,12 +26,7 @@ class Controller(yndf.gui.NethackController):
         self.model = None
         self.obs = None
 
-        self.action_masker = env
-        while not hasattr(self.action_masker, 'action_masks'):
-            if isinstance(self.action_masker, gym.Wrapper):
-                self.action_masker = self.action_masker.env
-            else:
-                raise ValueError("Environment does not support action masks.")
+        self.action_masker = get_action_masker(env)
 
     def reset(self) -> yndf.NethackState:
         """Reset the controller to the initial state and return the first frame."""
