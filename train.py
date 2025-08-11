@@ -55,6 +55,7 @@ def main(
     parallel: int = 12,
     output_dir: str = "models/",
     log_dir: str = "logs/",
+    name: str = "nethack",
     save_replays: bool = True
 ) -> None:
     """Train an agent to play NetHack.
@@ -90,7 +91,7 @@ def main(
     # Keep total rollout size roughly constant across different parallelism.
     n_steps_per_env = max(1, ROLLOUT_TARGET // n_envs)
     batch_size = min(DEFAULT_BATCH_SIZE, n_steps_per_env * n_envs)
-    model_file_name_base = f"nethack_{total_timesteps}"
+    model_file_name_base = f"{name}_{total_timesteps}"
     save_callback = PeriodicCheckpointCallback(
         save_every=100_000,
         save_dir=out_path,
@@ -150,6 +151,12 @@ if __name__ == "__main__":
         help="Save replays of the training episodes.",
         default=True,
     )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default="nethack",
+        help="Base name for the model files (default: 'nethack').",
+    )
 
     args = parser.parse_args()
 
@@ -157,6 +164,7 @@ if __name__ == "__main__":
         total_timesteps=args.timesteps,
         parallel=args.parallel,
         output_dir=args.output,
+        name=args.name,
         log_dir=args.log_dir,
         save_replays=args.save_replays,
     )
