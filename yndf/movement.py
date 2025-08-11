@@ -243,11 +243,8 @@ def _get_interesting_tiles(glyphs, visited, unpassable_mask):
     extra = np.argwhere(mask)
     return extra
 
-def _get_exit_targets(floor_glyphs, glyph_kinds, frontier, of_interest):
+def _get_exit_targets(floor_glyphs, glyph_kinds, frontier):
     """Gets exit tile targets if there are no interesting tiles to explore."""
-    if of_interest.size > 0:
-        return np.empty((0, 2), dtype=int)
-
     door_min = PassableGlyphs.S_ndoor.value
     door_max = PassableGlyphs.S_darkroom.value
     frontier_floor_vals = floor_glyphs[frontier]
@@ -273,13 +270,16 @@ def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.nda
                 unpassable_mask[y, x] = True
         glyph_kinds[unpassable_mask] = GlyphKind.UNPASSABLE.value
 
-    frontier = glyph_kinds == GlyphKind.FRONTIER.value
-
-    frontier_targets = np.argwhere(frontier)
+    # Prioritize interesting tiles (objects, items, etc.) over exploration and exits
     of_interest = _get_interesting_tiles(glyphs, visited, unpassable_mask)
-    exit_targets = _get_exit_targets(floor_glyphs, glyph_kinds, frontier, of_interest)
+    if of_interest.size > 0:
+        targets = of_interest
+    else:
+        frontier = glyph_kinds == GlyphKind.FRONTIER.value
+        frontier_targets = np.argwhere(frontier)
+        exit_targets = _get_exit_targets(floor_glyphs, glyph_kinds, frontier)
+        targets = np.concatenate([frontier_targets, exit_targets], axis=0)
 
-    targets = np.concatenate([frontier_targets, of_interest, exit_targets], axis=0)
     wavefront = calculate_wavefront(floor_glyphs, glyph_kinds, targets)
 
     return wavefront, glyph_kinds
