@@ -234,7 +234,8 @@ class NethackState:
 
     def add_stuck_boulder(self, player_position, boulder_position):
         """Add a stuck boulder to the state."""
-        if not any(boulder.boulder_position == boulder_position for boulder in self.stuck_boulders):
+        if not any(boulder.boulder_position == boulder_position and boulder.player_position == player_position
+                   for boulder in self.stuck_boulders):
             self.stuck_boulders.append(StuckBoulder(player_position, boulder_position))
 
     @property
