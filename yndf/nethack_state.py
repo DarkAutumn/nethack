@@ -1,11 +1,26 @@
 """The state of nethack at the current timestep.  All wrappers should interact with this instead of using
 observation directly."""
 
-from typing import Optional
+import math
+from typing import Optional, Tuple
 from nle import nethack
 import numpy as np
 
-from yndf.movement import CLOSED_DOORS, OPEN_DOORS, GlyphKind, SolidGlyphs, calculate_wavefront_and_glyph_kinds
+from yndf.movement import CLOSED_DOORS, OPEN_DOORS, GlyphKind, PassableGlyphs, SolidGlyphs, \
+                    calculate_wavefront_and_glyph_kinds
+
+CARDINALS: Tuple[Tuple[int, int], ...] = ((-1, 0), (0, 1), (1, 0), (0, -1))
+
+# Tunables (safe defaults)
+_MAX_WEDGE_DEPTH = 12     # how far "behind the wall" to estimate unknown mass
+_HALF_WEDGE_WIDTH = 3     # lateral half-width of the wedge
+_UNKNOWN_NORM = 20.0      # unknown tiles to reach score multiplier ~1.0
+_SEARCH_DECAY_TAU = 6.0   # e^{-searched / tau} decay
+
+
+def _perps(dy: int, dx: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Two perpendicular unit vectors to (dy, dx)
+    return (dx, -dy), (-dx, dy)
 
 class NethackPlayer:
     """Player state in Nethack."""
@@ -153,11 +168,9 @@ class NethackState:
         self.floor_glyphs = self._create_floor_glyphs(self.glyphs, prev)
 
         prev_is_usable = prev is not None and prev.player.depth == self.player.depth
-        if prev_is_usable:
-            self.visited = prev.visited.copy()
-        else:
-            self.visited: np.ndarray = np.zeros((21, 79), dtype=np.uint8)
+        self.searched_tiles = prev.searched_tiles.copy() if prev_is_usable else np.zeros((21, 79), dtype=np.uint8)
 
+        self.visited = prev.visited.copy() if prev_is_usable else np.zeros((21, 79), dtype=np.uint8)
         self.visited[self.player.position] = 1
 
         self.stuck_boulders = prev.stuck_boulders.copy() if prev_is_usable else []
@@ -194,6 +207,8 @@ class NethackState:
                 self.floor_glyphs[door] = self.glyphs[door]
             else:
                 self.floor_glyphs[door] = OPEN_DOORS[0]  # assume it's an open door
+
+        self.search_state = SearchState(self)
 
     @property
     def tty_chars(self):
@@ -272,3 +287,204 @@ class NethackState:
                         floor_glyphs[y, x] = prev_glyph
 
         return floor_glyphs
+
+class SearchState:
+    """A state that tracks search progress."""
+    def __init__(self, state: NethackState):
+        self._state = state
+        self.search_counts = np.zeros_like(state.floor_glyphs, dtype=np.uint16)
+        self.search_scores = self._calculate_search_score()
+
+    @staticmethod
+    def _is_corridor(g: int) -> bool:
+        return g in (PassableGlyphs.S_corr.value, PassableGlyphs.S_litcorr.value)
+
+    @staticmethod
+    def _is_room_floor(g: int) -> bool:
+        return g in (PassableGlyphs.S_room.value, PassableGlyphs.S_darkroom.value)
+
+    @staticmethod
+    def _is_open_door(g: int) -> bool:
+        return g in (PassableGlyphs.S_vodoor.value, PassableGlyphs.S_hodoor.value, PassableGlyphs.S_ndoor.value)
+
+    @staticmethod
+    def _is_closed_door(g: int) -> bool:
+        return g in (PassableGlyphs.S_vcdoor.value, PassableGlyphs.S_hcdoor.value)
+
+    @staticmethod
+    def _is_wall(g: int) -> bool:
+        # Walls/corners/T-walls + closed drawbridges (act like walls for “search a wall”)
+        return g in (
+            SolidGlyphs.S_vwall.value, SolidGlyphs.S_hwall.value,
+            SolidGlyphs.S_tlcorn.value, SolidGlyphs.S_trcorn.value,
+            SolidGlyphs.S_blcorn.value, SolidGlyphs.S_brcorn.value,
+            SolidGlyphs.S_crwall.value, SolidGlyphs.S_tuwall.value,
+            SolidGlyphs.S_tdwall.value, SolidGlyphs.S_tlwall.value,
+            SolidGlyphs.S_trwall.value, SolidGlyphs.S_vcdbridge.value,
+            SolidGlyphs.S_hcdbridge.value
+        )
+
+    @staticmethod
+    def _is_stone(g: int) -> bool:
+        return g == SolidGlyphs.S_stone.value
+
+    def _is_barrier(self, g: int) -> bool:
+        # Something you could plausibly reveal a secret through (room wall or rock)
+        return self._is_wall(g) or self._is_stone(g)
+
+    def _is_standable(self, g: int) -> bool:
+        # Where the agent can stand to perform a search
+        if self._is_closed_door(g):
+            return False
+        return (
+            self._is_room_floor(g) or self._is_corridor(g) or self._is_open_door(g) or
+            g in (
+                PassableGlyphs.S_upstair.value, PassableGlyphs.S_dnstair.value,
+                PassableGlyphs.S_upladder.value, PassableGlyphs.S_dnladder.value,
+                PassableGlyphs.S_altar.value, PassableGlyphs.S_throne.value,
+                PassableGlyphs.S_fountain.value, PassableGlyphs.S_ice.value,
+                PassableGlyphs.S_vodbridge.value, PassableGlyphs.S_hodbridge.value,
+                PassableGlyphs.S_water.value
+            )
+        )
+
+    # ---- local geometry helpers ------------------------------------------- #
+
+    def _count_cardinal_corridors(self, y: int, x: int) -> int:
+        shp_h, shp_w = self._state.floor_glyphs.shape
+        cnt = 0
+        for dy, dx in CARDINALS:
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < shp_h and 0 <= nx < shp_w and self._is_corridor(self._state.floor_glyphs[ny, nx]):
+                cnt += 1
+        return cnt
+
+    def _wall_run_length(self, wy: int, wx: int, n_dy: int, n_dx: int) -> int:
+        """
+        Length of contiguous wall along the axis perpendicular to the normal (n_dy, n_dx),
+        measured through the wall cell at (wy, wx). Includes this cell in the count.
+        """
+        floor_glyphs = self._state.floor_glyphs
+        shp_h, shp_w = floor_glyphs.shape
+        if not self._is_wall(floor_glyphs[wy, wx]):
+            return 0
+        length = 1
+        p1, p2 = _perps(n_dy, n_dx)
+        for py, px in (p1, p2):
+            step = 1
+            while True:
+                ny, nx = wy + py * step, wx + px * step
+                if not (0 <= ny < shp_h and 0 <= nx < shp_w):
+                    break
+                if not self._is_wall(floor_glyphs[ny, nx]):
+                    break
+                length += 1
+                step += 1
+        return length
+
+    def _unknown_mass_wedge(self, wy: int, wx: int, n_dy: int, n_dx: int,
+                            depth: int = _MAX_WEDGE_DEPTH,
+                            half_width: int = _HALF_WEDGE_WIDTH) -> int:
+        """
+        Count UNSEEN tiles in a forward wedge starting one cell *behind* the wall/rock at (wy, wx),
+        along the normal (n_dy, n_dx).
+        """
+        shp_h, shp_w = self._state.glyph_kinds.shape
+        perps = _perps(n_dy, n_dx)
+        total = 0
+        for k in range(1, depth + 1):
+            by, bx = wy + n_dy * k, wx + n_dx * k
+            for w in range(-half_width, half_width + 1):
+                py, px = perps[0]
+                ny, nx = by + py * w, bx + px * w
+                if 0 <= ny < shp_h and 0 <= nx < shp_w and self._state.glyph_kinds[ny, nx] == GlyphKind.UNSEEN.value:
+                    total += 1
+        return total
+
+    # ---- main scoring ------------------------------------------------------ #
+
+    def _calculate_search_score(self) -> np.ndarray:
+        """
+        Return a 7x7 float32 grid (centered on the agent) where each cell gives the
+        *standing* value of running a 22s search from that tile, in [0,1].
+
+        Heuristics:
+          - corridor dead-end tips score highest if there is unknown mass behind the tip
+          - standing next to long room walls with unknown behind scores well
+          - multiplied by unknown mass factor and decayed by how often we already searched there
+        """
+        floor_glyphs = self._state.floor_glyphs
+        shp_h, shp_w = floor_glyphs.shape
+        ay, ax = self._state.player.position
+        scores = np.zeros((7, 7), dtype=np.float32)
+
+        searched_map = self.search_counts
+        assert searched_map.shape == floor_glyphs.shape
+
+        for oy in range(-3, 4):
+            for ox in range(-3, 4):
+                ty, tx = ay + oy, ax + ox
+                if not (0 <= ty < shp_h and 0 <= tx < shp_w):
+                    continue
+
+                g_here = floor_glyphs[ty, tx]
+                if not self._is_standable(g_here):
+                    continue
+
+                best = 0.0
+
+                # 1) Corridor dead-end tip
+                if self._is_corridor(g_here):
+                    corr_neighbors = []
+                    for dy, dx in CARDINALS:
+                        ny, nx = ty + dy, tx + dx
+                        if 0 <= ny < shp_h and 0 <= nx < shp_w and self._is_corridor(floor_glyphs[ny, nx]):
+                            corr_neighbors.append((dy, dx))
+                    if len(corr_neighbors) <= 1:
+                        # look in directions that are NOT corridor (the blocked faces)
+                        for dy, dx in CARDINALS:
+                            if (dy, dx) in corr_neighbors:
+                                continue
+                            wy, wx = ty + dy, tx + dx
+                            if not (0 <= wy < shp_h and 0 <= wx < shp_w):
+                                continue
+                            if not self._is_barrier(self._state.floor_glyphs[wy, wx]):
+                                continue
+                            unknown = self._unknown_mass_wedge(wy, wx, dy, dx)
+                            uf = min(1.0, unknown / _UNKNOWN_NORM)
+                            best = max(best, 1.0 * uf)  # dead-end base = 1.0
+
+                # 2) Adjacent wall/rock with unknown behind (room-wall & rock cases)
+                for dy, dx in CARDINALS:
+                    wy, wx = ty + dy, tx + dx
+                    if not (0 <= wy < shp_h and 0 <= wx < shp_w):
+                        continue
+                    wg = self._state.floor_glyphs[wy, wx]
+                    if not self._is_barrier(wg):
+                        continue
+
+                    unknown = self._unknown_mass_wedge(wy, wx, dy, dx)
+                    if unknown <= 0:
+                        continue
+
+                    uf = min(1.0, unknown / _UNKNOWN_NORM)
+
+                    if self._is_wall(wg):
+                        run = self._wall_run_length(wy, wx, dy, dx)
+                        base = 0.7 if run >= 3 else 0.4
+                        if run >= 5:
+                            base = min(0.9, base + 0.05)
+                    else:
+                        # plain rock/stone (e.g., end of a rock corridor)
+                        base = 0.5
+
+                    best = max(best, base * uf)
+
+                # 3) Downweight by how often we already searched *on this standing tile*
+                searched = int(searched_map[ty, tx]) if searched_map is not None else 0
+                decay = math.exp(-searched / _SEARCH_DECAY_TAU) if searched > 0 else 1.0
+                score = max(0.0, min(1.0, best * decay))
+
+                scores[oy + 3, ox + 3] = score
+
+        return scores
