@@ -66,6 +66,17 @@ DIRECTION_MAP = {
     nle.nethack.CompassDirection.SE : (1, 1),
 }
 
+DIRECTION_TO_ACTION = {
+    (-1, -1): nle.nethack.CompassDirection.NW,
+    (-1, 0): nle.nethack.CompassDirection.N,
+    (-1, 1): nle.nethack.CompassDirection.NE,
+    (0, -1): nle.nethack.CompassDirection.W,
+    (0, 1): nle.nethack.CompassDirection.E,
+    (1, -1): nle.nethack.CompassDirection.SW,
+    (1, 0): nle.nethack.CompassDirection.S,
+    (1, 1): nle.nethack.CompassDirection.SE,
+}
+
 DIRECTIONS = list(DIRECTION_MAP.values())
 
 class GlyphKind(Enum):
@@ -81,7 +92,7 @@ UNPASSABLE_WAVEFRONT = 1_000_000
 CLOSED_DOORS = (PassableGlyphs.S_vcdoor.value, PassableGlyphs.S_hcdoor.value)
 OPEN_DOORS = (PassableGlyphs.S_vodoor.value, PassableGlyphs.S_hodoor.value)
 
-def _manhattan_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+def manhattan_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
     """Calculate the Manhattan distance between two points."""
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
@@ -100,20 +111,11 @@ def can_move(glyphs : np.ndarray, from_pos : Tuple[int, int], to_pos : Tuple[int
 
     # can't move diagonally through an open door, can open a door diagnonally
     if _cannot_move_diagonal(glyph) or _cannot_move_diagonal(glyphs[from_pos[0], from_pos[1]]):
-        if _manhattan_distance(from_pos, to_pos) == 2:
+        if manhattan_distance(from_pos, to_pos) == 2:
             # can't move diagonally through a door
             return False
 
     return True
-
-def adjacent_to(glyphs : np.ndarray, y: int, x: int, kind) -> bool:
-    """Check if the given position is adjacent to a closed door."""
-    for dy, dx in DIRECTIONS:
-        ny, nx = y + dy, x + dx
-        if (0 <= ny < glyphs.shape[0] and 0 <= nx < glyphs.shape[1]):
-            if glyphs[ny, nx] in kind:
-                return True
-    return False
 
 def _neighbors_any(mask: np.ndarray,
                    directions: Iterable[Tuple[int, int]],

@@ -138,3 +138,16 @@ class NethackRewardWrapper(gym.Wrapper):
                     reward_list.append(Rewards.SUCCESS)
 
         return terminated, truncated
+
+    def merge_reward_info(self, info: dict, new_info: dict):
+        """Merge new reward information into the existing info dictionary."""
+        if "rewards" not in info:
+            info["rewards"] = {}
+        for key, value in new_info.get("rewards", {}).items():
+            if key in info["rewards"]:
+                info["rewards"][key] += value
+            else:
+                info["rewards"][key] = value
+
+        if "ending" in new_info:
+            info["ending"] = new_info["ending"]

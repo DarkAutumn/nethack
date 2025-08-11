@@ -6,7 +6,7 @@ from nle import nethack
 
 from yndf.nethack_state import NethackState
 
-from yndf.movement import DIRECTION_MAP, can_move, adjacent_to, CLOSED_DOORS
+from yndf.movement import DIRECTION_MAP, DIRECTION_TO_ACTION, DIRECTIONS, can_move, CLOSED_DOORS, manhattan_distance
 
 class UserInputAction:
     """A class to represent user input actions."""
@@ -42,7 +42,7 @@ class NethackActionWrapper(gym.Wrapper):
                 continue
             self._action_directions[actions.index(direction)] = (dy, dx)
 
-        self._kick_index = actions.index(nethack.Command.KICK) if nethack.Command.KICK in actions else None
+        self.kick_index = actions.index(nethack.Command.KICK) if nethack.Command.KICK in actions else None
 
         self._unwrapped_actions = self.unwrapped.actions
         self.model_actions = actions
@@ -94,15 +94,19 @@ class NethackActionWrapper(gym.Wrapper):
             if not can_move(self._state.floor_glyphs, self._state.player.position, (ny, nx)):
                 mask[index] = False
             elif (ny, nx) in self._state.locked_doors:
-                assert index != self._kick_index
+                assert index != self.kick_index
                 mask[index] = False
             elif boulders and any(boulder.boulder_position == (ny, nx) for boulder in boulders):
                 # If the player is trying to move a stuck boulder, we need to disallow that action
                 mask[index] = False
 
-        if self._kick_index is not None:
+        if self.kick_index is not None:
             # Check if the player can kick
-            mask[self._kick_index] = adjacent_to(self._state.floor_glyphs, *self._state.player.position, CLOSED_DOORS)
+            can_kick = any(True
+                           for pos in self._state.locked_doors
+                           if manhattan_distance(pos, self._state.player.position) == 1)
+
+            mask[self.kick_index] = can_kick
 
         if self._disallowed_moves:
             self._disallowed_moves = [dm for dm in self._disallowed_moves if dm.is_still_in_effect(self._state)]
@@ -122,3 +126,18 @@ class NethackActionWrapper(gym.Wrapper):
 
         action = self._unwrapped_actions[action]
         return action.value
+
+    def get_valid_kick_actions(self, state : NethackState) -> bool:
+        """Check if the given position is adjacent to a closed door."""
+        glyphs = state.floor_glyphs
+        y, x = state.player.position
+        result = []
+        for dy, dx in DIRECTIONS:
+            ny, nx = y + dy, x + dx
+            if (0 <= ny < glyphs.shape[0] and 0 <= nx < glyphs.shape[1]):
+                if glyphs[ny, nx] in CLOSED_DOORS:
+                    direction = DIRECTION_TO_ACTION[(dy, dx)]
+                    action = self.model_actions.index(direction)
+                    result.append(action)
+
+        return result
