@@ -195,7 +195,7 @@ def calculate_glyph_kinds(glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray
     # Reuse a workspace array to avoid an extra allocation:
     work = np.zeros_like(visited_bool)
     touches_unseen = _neighbors_any(unseen_and_unvisited, DIRECTIONS, out=work)
-    frontier_mask = (gk == GlyphKind.PASSABLE.value) & touches_unseen
+    frontier_mask = (gk == GlyphKind.PASSABLE.value) & touches_unseen & ~visited_bool
     gk[frontier_mask] = GlyphKind.FRONTIER.value
 
     return gk
@@ -232,9 +232,35 @@ def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: Li
 
     return wavefront
 
-def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray:
+def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray,
+                                        visited: np.ndarray, unpassable: List[Tuple[int, int]]) -> np.ndarray:
     """Calculate the wavefront from a NethackState and a list of target locations."""
-    glyph_kinds = calculate_glyph_kinds(glyphs, visited)
-    targets = np.argwhere((glyph_kinds == GlyphKind.EXIT.value) | (glyph_kinds == GlyphKind.FRONTIER.value))
-    wavefront = calculate_wavefront(glyphs, glyph_kinds, targets)
+
+    # pylint: disable=no-member
+    glyph_kinds = calculate_glyph_kinds(floor_glyphs, visited)
+    # if there are impassible tiles, we need to change glyph_kinds to unpassable
+    if unpassable:
+        unpassable_mask = np.zeros(glyph_kinds.shape, dtype=bool)
+        for y, x in unpassable:
+            if 0 <= y < glyph_kinds.shape[0] and 0 <= x < glyph_kinds.shape[1]:
+                unpassable_mask[y, x] = True
+        glyph_kinds[unpassable_mask] = GlyphKind.UNPASSABLE.value
+
+
+    # existing targets (shape: [N, 2])
+    targets = np.argwhere(
+        (glyph_kinds == GlyphKind.EXIT.value) |
+        (glyph_kinds == GlyphKind.FRONTIER.value)
+    )
+
+    # BONUS: vectorized way (faster than Python loops)
+    is_cmap = np.vectorize(nle.nethack.glyph_is_cmap)
+    is_mon  = np.vectorize(nle.nethack.glyph_is_monster)
+    mask = (~visited.astype(bool)) & (~is_cmap(glyphs)) & (~is_mon(glyphs))
+    extra = np.argwhere(mask)  # shape: [M, 2], dtype=int64
+
+    if extra.size:
+        targets = np.concatenate([targets, extra], axis=0)
+
+    wavefront = calculate_wavefront(floor_glyphs, glyph_kinds, targets)
     return wavefront, glyph_kinds

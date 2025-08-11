@@ -50,6 +50,8 @@ class NethackActionWrapper(gym.Wrapper):
         for i, action in enumerate(actions):
             self._action_map[i] = self._unwrapped_actions.index(action)
 
+        self._disallowed_moves = []
+
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
         self._state: NethackState = info["state"]
@@ -60,6 +62,7 @@ class NethackActionWrapper(gym.Wrapper):
         action = self._translate_action(action)
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._state: NethackState = info["state"]
+
         info["action_mask"] = self.action_masks()
         return obs, reward, terminated, truncated, info
 
@@ -82,6 +85,10 @@ class NethackActionWrapper(gym.Wrapper):
         mask = self._descend_only.copy() if self._state.is_player_on_exit else self._all_but_descend.copy()
 
         # Apply movement direction masks
+        boulders = [boulder
+                    for boulder in self._state.stuck_boulders
+                    if boulder.player_position == self._state.player.position]
+
         for index, (dy, dx) in self._action_directions.items():
             ny, nx = self._state.player.position[0] + dy, self._state.player.position[1] + dx
             if not can_move(self._state.floor_glyphs, self._state.player.position, (ny, nx)):
@@ -89,10 +96,22 @@ class NethackActionWrapper(gym.Wrapper):
             elif (ny, nx) in self._state.locked_doors:
                 assert index != self._kick_index
                 mask[index] = False
+            elif boulders and any(boulder.boulder_position == (ny, nx) for boulder in boulders):
+                # If the player is trying to move a stuck boulder, we need to disallow that action
+                mask[index] = False
 
         if self._kick_index is not None:
             # Check if the player can kick
             mask[self._kick_index] = adjacent_to(self._state.floor_glyphs, *self._state.player.position, CLOSED_DOORS)
+
+        if self._disallowed_moves:
+            self._disallowed_moves = [dm for dm in self._disallowed_moves if dm.is_still_in_effect(self._state)]
+
+            for disallowed in self._disallowed_moves:
+                if disallowed.does_apply(self._state):
+                    # If the player is trying to move a boulder, we need to disallow that action
+                    index = self.model_actions.index(disallowed.action)
+                    mask[index] = False
 
         return mask
 

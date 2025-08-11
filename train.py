@@ -10,6 +10,7 @@ import gymnasium as gym
 from nle import nethack
 from sb3_contrib.ppo_mask import MaskablePPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.callbacks import BaseCallback
 
 import yndf
 
@@ -23,13 +24,31 @@ ACTIONS = MOVE_ACTIONS + DESCEND_ACTION + OTHER_ACTIONS
 ROLLOUT_TARGET = 4096
 DEFAULT_BATCH_SIZE = 1024
 
+class PeriodicCheckpointCallback(BaseCallback):
+    """Save model checkpoints every `save_every` timesteps.
 
-def _make_env(_: int) -> Callable[[], gym.Env]:
-    """Factory for creating a single environment instance."""
-    def _init() -> gym.Env:
-        return gym.make("YenderFlow-v0", actions=ACTIONS)
-    return _init
+    Files are written to `save_dir / f"{model_name}_{num_timesteps}.zip"`.
+    """
+    def __init__(self, save_every: int, save_dir: Path, model_name: str, verbose: int = 0) -> None:
+        super().__init__(verbose=verbose)
+        self.save_every = int(save_every)
+        self.save_dir = Path(save_dir)
+        self.model_name = model_name
+        self._last_saved_step = 0
 
+    def _on_training_start(self) -> bool:
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        return True
+
+    def _on_step(self) -> bool:
+        steps = int(self.model.num_timesteps)
+        if steps - self._last_saved_step >= self.save_every:
+            path = self.save_dir / f"{self.model_name}_{steps}.zip"
+            self.model.save(str(path))
+            self._last_saved_step = steps
+            if self.verbose:
+                print(f"[checkpoint] saved {path}")
+        return True
 
 def main(
     total_timesteps: int,
@@ -52,17 +71,32 @@ def main(
     out_path.mkdir(parents=True, exist_ok=True)
     log_path.mkdir(parents=True, exist_ok=True)
 
+
+    def _make_env(_: int) -> Callable[[], gym.Env]:
+        """Factory for creating a single environment instance."""
+        def _init() -> gym.Env:
+            return gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=save_replays)
+        return _init
+
     if parallel <= 1:
         n_envs = 1
-        env = gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=save_replays)
+        env = _make_env(0)()
     else:
         n_envs = parallel
         env = SubprocVecEnv([_make_env(i) for i in range(n_envs)], start_method="fork")
-        env = VecMonitor(env)
+
+    env = VecMonitor(env)
 
     # Keep total rollout size roughly constant across different parallelism.
     n_steps_per_env = max(1, ROLLOUT_TARGET // n_envs)
     batch_size = min(DEFAULT_BATCH_SIZE, n_steps_per_env * n_envs)
+    model_file_name_base = f"nethack_{total_timesteps}"
+    save_callback = PeriodicCheckpointCallback(
+        save_every=100_000,
+        save_dir=out_path,
+        model_name=model_file_name_base,
+        verbose=1,
+    )
 
     model = MaskablePPO(
         policy=yndf.NethackMaskablePolicy,
@@ -79,8 +113,8 @@ def main(
         f"batch_size={batch_size}, output='{out_path}', logs='{log_path}'"
     )
 
-    model.learn(total_timesteps=total_timesteps, progress_bar=True)
-    model.save(str(out_path / f"ppo_nethack_nav_{total_timesteps}"))
+    model.learn(total_timesteps=total_timesteps, progress_bar=True, callback=save_callback)
+    model.save(str(out_path / model_file_name_base))
 
     print("Training finished and model saved.")
 

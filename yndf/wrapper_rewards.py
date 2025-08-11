@@ -30,6 +30,7 @@ class Rewards:
     GOLD = Reward("gold", 0.05)
     SCORE = Reward("score", 0.01)
     REVEALED_TILE = Reward("revealed-tile", 0.01, max_value=0.05)
+    REACHED_FRONTIER = Reward("reached-frontier", 0.05)
     SUCCESS = Reward("success", 1.0)
 
 class Endings(Enum):
@@ -75,7 +76,7 @@ class NethackRewardWrapper(gym.Wrapper):
         self._prev = state
         return obs, reward, terminated, truncated, info
 
-    def _check_revealed_tiles(self, reward_list, prev, state):
+    def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState):
         """Check if any new tiles were revealed."""
         prev_stones = (prev.floor_glyphs == SolidGlyphs.S_stone.value).sum()
         new_stones = (state.floor_glyphs == SolidGlyphs.S_stone.value).sum()
@@ -84,8 +85,14 @@ class NethackRewardWrapper(gym.Wrapper):
         if revealed > 0:
             reward_list.append(Rewards.REVEALED_TILE * revealed)
             self._steps_since_new = 0
+        else:
+            # give a larger reward for grabbing items off of the floor, which is effectively what
+            # this is checking
+            if prev.wavefront[state.player.position] == 0 and not prev.visited[state.player.position]:
+                reward_list.append(Rewards.REACHED_FRONTIER)
+                self._steps_since_new = 0
 
-    def _check_state_changes(self, reward_list, prev, state):
+    def _check_state_changes(self, reward_list, prev : NethackState, state : NethackState):
         if prev.player.depth < state.player.depth:
             reward_list.append(Rewards.DESCENDED)
             self._steps_since_new = 0
