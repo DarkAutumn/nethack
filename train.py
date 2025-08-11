@@ -24,13 +24,6 @@ ROLLOUT_TARGET = 4096
 DEFAULT_BATCH_SIZE = 1024
 
 
-def _make_env(_: int) -> Callable[[], gym.Env]:
-    """Factory for creating a single environment instance."""
-    def _init() -> gym.Env:
-        return gym.make("YenderFlow-v0", actions=ACTIONS)
-    return _init
-
-
 def main(
     total_timesteps: int,
     parallel: int = 12,
@@ -52,13 +45,21 @@ def main(
     out_path.mkdir(parents=True, exist_ok=True)
     log_path.mkdir(parents=True, exist_ok=True)
 
+
+    def _make_env(_: int) -> Callable[[], gym.Env]:
+        """Factory for creating a single environment instance."""
+        def _init() -> gym.Env:
+            return gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=save_replays)
+        return _init
+
     if parallel <= 1:
         n_envs = 1
-        env = gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=save_replays)
+        env = _make_env(0)()
     else:
         n_envs = parallel
         env = SubprocVecEnv([_make_env(i) for i in range(n_envs)], start_method="fork")
-        env = VecMonitor(env)
+
+    env = VecMonitor(env)
 
     # Keep total rollout size roughly constant across different parallelism.
     n_steps_per_env = max(1, ROLLOUT_TARGET // n_envs)
