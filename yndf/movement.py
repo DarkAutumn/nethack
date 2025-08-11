@@ -232,10 +232,11 @@ def calculate_wavefront(glyphs: np.ndarray, glyph_kinds: np.ndarray, targets: Li
 
     return wavefront
 
-def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray:
+def calculate_wavefront_and_glyph_kinds(glyphs: np.ndarray, floor_glyphs: np.ndarray,
+                                        visited: np.ndarray) -> np.ndarray:
     """Calculate the wavefront from a NethackState and a list of target locations."""
 
-
+    # pylint: disable=no-member
     glyph_kinds = calculate_glyph_kinds(floor_glyphs, visited)
 
     # existing targets (shape: [N, 2])
