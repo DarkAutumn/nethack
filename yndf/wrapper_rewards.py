@@ -21,17 +21,17 @@ class Reward:
 
 class Rewards:
     """Enum for different types of rewards for the agent."""
+    STEP = Reward("step", -0.0015)
     HURT = Reward("took-damage", -0.05)
     KILL = Reward("kill-enemy", 0.5)
     DESCENDED = Reward("descended", 1.0)
-    SECRET = Reward("secret", 0.1)
     DEATH = Reward("death", -5.0)
     LEVEL_UP = Reward("level-up", 0.5)
     GOLD = Reward("gold", 0.05)
-    SCORE = Reward("score", 0.01)
+    SCORE = Reward("score", 0.01) # any increase in score not rewarded by something else
     REVEALED_TILE = Reward("revealed-tile", 0.01, max_value=0.05)
     REACHED_FRONTIER = Reward("reached-frontier", 0.05)
-    SUCCESS = Reward("success", 1.0)
+    SUCCESS = Reward("success", 1.0)  # mini-scenario completed
 
 class Endings(Enum):
     """Enum for different types of endings."""
@@ -58,7 +58,7 @@ class NethackRewardWrapper(gym.Wrapper):
     def step(self, action):  # type: ignore[override]
         obs, reward, terminated, truncated, info = self.env.step(action)
 
-        reward_list = []
+        reward_list = [Rewards.STEP]
         state: NethackState = info["state"]
 
         terminated, truncated = self._check_endings(terminated, truncated, info, state, reward_list)
@@ -67,11 +67,10 @@ class NethackRewardWrapper(gym.Wrapper):
             self._check_revealed_tiles(reward_list, self._prev, state)
 
         reward = 0.0
-        if  reward_list:
-            details = info["rewards"] = {}
-            for r in reward_list:
-                reward += r.value
-                details[r.name] = details.get(r.name, 0.0) + r.value
+        details = info["rewards"] = {}
+        for r in reward_list:
+            reward += r.value
+            details[r.name] = details.get(r.name, 0.0) + r.value
 
         self._prev = state
         return obs, reward, terminated, truncated, info

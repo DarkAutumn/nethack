@@ -371,9 +371,9 @@ class NetHackWindow(QtWidgets.QMainWindow):
         self._on_step(code)
 
     def _add_step(self, step: StepInfo) -> None:
-        item = QtWidgets.QTreeWidgetItem([step.action, f"{step.reward:+.2f}"])
+        item = QtWidgets.QTreeWidgetItem([step.action, f"{step.reward:+.3f}"])
         for lbl, val in step.reward_labels:
-            QtWidgets.QTreeWidgetItem(item, [f"• {lbl}", f"{val:+.2f}"])
+            QtWidgets.QTreeWidgetItem(item, [f"• {lbl}", f"{val:+.3f}"])
             self._rewards_counter[lbl] += val
         self.actions.addTopLevelItem(item)
         self.actions.scrollToItem(item)
@@ -417,7 +417,7 @@ class NetHackWindow(QtWidgets.QMainWindow):
         table.setRowCount(len(rows))
         for r, (lbl, val) in enumerate(rows):
             table.setItem(r, 0, QtWidgets.QTableWidgetItem(lbl))
-            tbl_txt = f"{val:+.2f}" if isinstance(val, float) else str(val)
+            tbl_txt = f"{val:+.3f}" if isinstance(val, float) else str(val)
             table.setItem(r, 1, QtWidgets.QTableWidgetItem(tbl_txt))
         table.resizeRowsToContents()
 
