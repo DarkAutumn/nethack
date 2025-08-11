@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 from typing import Callable
 
@@ -10,7 +11,7 @@ import gymnasium as gym
 from nle import nethack
 from sb3_contrib.ppo_mask import MaskablePPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 import yndf
 
@@ -50,6 +51,83 @@ class PeriodicCheckpointCallback(BaseCallback):
                 print(f"[checkpoint] saved {path}")
         return True
 
+class InfoCountsLogger(BaseCallback):
+    """Log counts of various info keys during training."""
+    def __init__(self, log_every: int, verbose: int = 0) -> None:
+        super().__init__(verbose=verbose)
+        self.log_every = log_every
+        self._last_log_step = 0
+        self._emitted = set()
+        self._counters = {}
+        self._values = {}
+        self._averages = {}
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos")
+        if infos:
+            # `infos` is list[dict] for vec envs; may be dict for non-vec
+            if isinstance(infos, dict):
+                infos_iter = (infos,)
+            else:
+                infos_iter = infos
+
+            for info in infos_iter:
+                if not info:
+                    continue
+
+                if (ending := info.get("ending", None)) is not None:
+                    self._counters.setdefault("endings", []).append(ending)
+                    state = info.get("state", None)
+                    if state is not None:
+                        self._averages.setdefault("counts/depth", []).append(state.player.depth)
+
+                if (rewards := info.get("rewards", None)) is not None:
+                    for name, value in rewards.items():
+                        key = f"rewards/{name}"
+                        self._values[key] = self._values.get(key, 0.0) + value
+
+        return True
+
+    def _on_rollout_end(self) -> bool:
+        if self.model.num_timesteps - self._last_log_step < self.log_every:
+            return True
+
+        self._last_log_step = int(self.model.num_timesteps)
+
+        curr_emitted = set()
+        for base_name, values in self._counters.items():
+            counter = Counter(values)
+            for name, count in counter.items():
+                key = f"{base_name}/{name}"
+                self.logger.record(key, count / len(values) if values else 0)
+                curr_emitted.add(key)
+                self._emitted.add(key)
+
+        for name, values in self._averages.items():
+            if values:
+                avg = sum(values) / len(values)
+                self.logger.record(name, avg)
+                curr_emitted.add(name)
+                self._emitted.add(name)
+
+        for key, value in self._values.items():
+            self.logger.record(key, value)
+            curr_emitted.add(key)
+            self._emitted.add(key)
+
+        missing = self._emitted - curr_emitted
+        for key in missing:
+            self.logger.record(key, 0)
+
+        # Reset for the next rollout window
+        for v in self._counters.values():
+            v.clear()
+
+        for k in self._values:
+            self._values[k] = 0.0
+
+        return True
+
 def main(
     total_timesteps: int,
     parallel: int = 12,
@@ -72,7 +150,6 @@ def main(
     out_path.mkdir(parents=True, exist_ok=True)
     log_path.mkdir(parents=True, exist_ok=True)
 
-
     def _make_env(_: int) -> Callable[[], gym.Env]:
         """Factory for creating a single environment instance."""
         def _init() -> gym.Env:
@@ -85,19 +162,28 @@ def main(
     else:
         n_envs = parallel
         env = SubprocVecEnv([_make_env(i) for i in range(n_envs)], start_method="fork")
+        env = VecMonitor(env)
 
-    env = VecMonitor(env)
 
     # Keep total rollout size roughly constant across different parallelism.
     n_steps_per_env = max(1, ROLLOUT_TARGET // n_envs)
     batch_size = min(DEFAULT_BATCH_SIZE, n_steps_per_env * n_envs)
     model_file_name_base = f"{name}_{total_timesteps}"
+
+    print(
+        f"Starting training: timesteps={total_timesteps}, "
+        f"parallel_envs={n_envs}, n_steps/env={n_steps_per_env}, "
+        f"batch_size={batch_size}, output='{out_path}', logs='{log_path}'"
+    )
     save_callback = PeriodicCheckpointCallback(
         save_every=100_000,
         save_dir=out_path,
         model_name=model_file_name_base,
         verbose=1,
     )
+
+    info_callback = InfoCountsLogger(log_every=100_000, verbose=1)
+    callbacks = CallbackList([save_callback, info_callback])
 
     model = MaskablePPO(
         policy=yndf.NethackMaskablePolicy,
@@ -107,14 +193,7 @@ def main(
         n_steps=n_steps_per_env,
         tensorboard_log=str(log_path),
     )
-
-    print(
-        f"Starting training: timesteps={total_timesteps}, "
-        f"parallel_envs={n_envs}, n_steps/env={n_steps_per_env}, "
-        f"batch_size={batch_size}, output='{out_path}', logs='{log_path}'"
-    )
-
-    model.learn(total_timesteps=total_timesteps, progress_bar=True, callback=save_callback)
+    model.learn(total_timesteps=total_timesteps, progress_bar=True, callback=callbacks)
     model.save(str(out_path / model_file_name_base))
 
     print("Training finished and model saved.")
