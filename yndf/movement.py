@@ -195,7 +195,7 @@ def calculate_glyph_kinds(glyphs: np.ndarray, visited: np.ndarray) -> np.ndarray
     # Reuse a workspace array to avoid an extra allocation:
     work = np.zeros_like(visited_bool)
     touches_unseen = _neighbors_any(unseen_and_unvisited, DIRECTIONS, out=work)
-    frontier_mask = (gk == GlyphKind.PASSABLE.value) & touches_unseen
+    frontier_mask = (gk == GlyphKind.PASSABLE.value) & touches_unseen & ~visited_bool
     gk[frontier_mask] = GlyphKind.FRONTIER.value
 
     return gk
