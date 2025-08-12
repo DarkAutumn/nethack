@@ -81,7 +81,7 @@ class NethackRewardWrapper(gym.Wrapper):
 
     def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState, action_is_search: bool):
         """Check if any new tiles were revealed."""
-        revealed = self._prev.stone_tiles - state.stone_tiles
+        revealed = self._prev.stone_tile_count - state.stone_tile_count
         if revealed > 0:
             if action_is_search:
                 value = Rewards.SEARCH_SUCCESS.value + min(Rewards.REVEALED_TILE.value * revealed, 0.2)

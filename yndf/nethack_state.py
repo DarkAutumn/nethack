@@ -156,6 +156,70 @@ class StuckBoulder:
     def __repr__(self):
         return f"StuckBoulder(player_position={self.player_position}, boulder_position={self.boulder_position})"
 
+class GlyphLookup:
+    """A lookup for glyph properties."""
+
+    # pylint: disable=no-member
+    def __init__(self):
+        self._size = 0
+        self.is_monster = np.zeros(0, dtype=bool)
+        self.is_pet = np.zeros(0, dtype=bool)
+        self.is_object = np.zeros(0, dtype=bool)
+
+    def _grow_to(self, new_size: int) -> None:
+        if new_size <= self._size:
+            return
+
+        # grow in chunks to avoid frequent reallocations
+        target = max(new_size, int(self._size * 1.5) + 1024)
+        m = np.empty(target, dtype=bool)
+        p = np.empty(target, dtype=bool)
+
+        # keep old values
+        if self._size:
+            m[:self._size] = self.is_monster
+            p[:self._size] = self.is_pet
+        # fill new range once using the C helpers
+        for i in range(self._size, target):
+            m[i] = nethack.glyph_is_monster(i)
+            p[i] = nethack.glyph_is_pet(i)
+        self.is_monster, self.is_pet = m, p
+        self._size = target
+
+    def masks_for(self, glyphs: np.ndarray):
+        """Return masks for the given glyphs."""
+        max_id = int(glyphs.max()) if glyphs.size else 0
+        self._grow_to(max_id + 1)
+        return self.is_monster[glyphs], self.is_pet[glyphs]
+
+    def mask_monster(self, glyphs: np.ndarray) -> np.ndarray:
+        """Return a mask for monster glyphs."""
+        self._grow(int(glyphs.max()) + 1 if glyphs.size else 1)
+        return self.is_monster[glyphs]
+
+    def mask_object(self, glyphs: np.ndarray) -> np.ndarray:
+        """Return a mask for object glyphs."""
+        self._grow(int(glyphs.max()) + 1 if glyphs.size else 1)
+        return self.is_object[glyphs]
+
+
+    def _grow(self, need:int):
+        if need <= self._size:
+            return
+        n = max(need, int(self._size * 1.5) + 1024)
+        m = np.empty(n, dtype=bool)
+        m[:self._size] = self.is_monster[:self._size]
+
+        o = np.empty(n, dtype=bool)
+        o[:self._size] = self.is_object[:self._size]
+
+        for i in range(self._size, n):
+            m[i] = nethack.glyph_is_monster(i)
+            o[i] = nethack.glyph_is_object(i)
+        self.is_monster, self.is_object, self._size = m, o, n
+
+GLYPH_LOOKUP = GlyphLookup()
+
 class NethackState:
     """World state in Nethack."""
     # pylint: disable=no-member
@@ -210,20 +274,39 @@ class NethackState:
             else:
                 self.floor_glyphs[door] = OPEN_DOORS[0]  # assume it's an open door
 
-        self.search_state = SearchState(self, prev.search_state if prev_is_usable else None)
+        self._prev_search_state = prev.search_state if prev_is_usable else None
 
         self.game_over = info['end_status'] == 1  # death
 
-    @property
+    @cached_property
+    def search_state(self):
+        """Get the search state."""
+
+        prev = self._prev_search_state
+        del self._prev_search_state
+        return SearchState(self, prev)
+
+    @cached_property
     def visible_enemies(self):
         """Check if there are any visible enemies."""
-        is_mon = np.vectorize(nethack.glyph_is_monster)
-        is_pet = np.vectorize(nethack.glyph_is_pet)
+        g = self.glyphs
+        if g.size == 0:
+            return False
 
-        mask = is_mon(self.glyphs) & ~is_pet(self.glyphs) & (self.glyphs != AGENT_GLYPH)
-        return np.any(mask)
+        # Compress to uniques so we call the C helpers O(U) times, U << g.size
+        uniq, inv = np.unique(g, return_inverse=True)
+
+        is_mon_u = np.fromiter((nethack.glyph_is_monster(int(x)) for x in uniq),
+                            count=uniq.size, dtype=bool)
+        is_pet_u = np.fromiter((nethack.glyph_is_pet(int(x)) for x in uniq),
+                            count=uniq.size, dtype=bool)
+
+        is_mon = is_mon_u[inv]
+        is_pet = is_pet_u[inv]
+        return bool((is_mon & ~is_pet & (g != AGENT_GLYPH)).any())
+
     @cached_property
-    def stone_tiles(self):
+    def stone_tile_count(self):
         """Get the number of stone tiles."""
         return (self.floor_glyphs == SolidGlyphs.S_stone.value).sum()
 
@@ -286,24 +369,21 @@ class NethackState:
         result.update(self.player.as_dict())
         return result
 
-    def _create_floor_glyphs(self, glyphs: np.ndarray, prev: Optional['NethackState']) -> np.ndarray:
-        """Create a 2D array of floor glyphs, where each cell contains the glyph without characters."""
+    def _create_floor_glyphs(self, glyphs: np.ndarray, prev: Optional["NethackState"]) -> np.ndarray:
         if prev is not None and self.player.depth != prev.player.depth:
             prev = None
-
-        floor_glyphs = glyphs.copy()
         if prev is None:
-            return floor_glyphs
+            return glyphs.copy()
 
-        for y in range(glyphs.shape[0]):
-            for x in range(glyphs.shape[1]):
-                glyph = glyphs[y, x]
-                if nethack.glyph_is_monster(glyph) or nethack.glyph_is_object(glyph):
-                    prev_glyph = prev.floor_glyphs[y, x]
-                    if prev_glyph != SolidGlyphs.S_stone.value:
-                        floor_glyphs[y, x] = prev_glyph
+        prev_fg = prev.floor_glyphs
+        # Build a mask of cells currently showing a monster or an object,
+        # but where the previous floor wasn’t solid stone.
+        mon = GLYPH_LOOKUP.mask_monster(glyphs)     # bool array, same shape as glyphs
+        obj = GLYPH_LOOKUP.mask_object(glyphs)      # bool array, same shape as glyphs
+        mask = (mon | obj) & (prev_fg != SolidGlyphs.S_stone.value)
 
-        return floor_glyphs
+        # Write-through using vectorized selection
+        return np.where(mask, prev_fg, glyphs)
 
 class SearchState:
     """A state that tracks search progress."""

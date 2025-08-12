@@ -90,7 +90,7 @@ class NoDiscovery(Ending):
         elif self._prev.player.gold < state.player.gold:
             self._steps_since_new = 0
 
-        elif self._prev.stone_tiles > state.stone_tiles:
+        elif self._prev.stone_tile_count > state.stone_tile_count:
             self._steps_since_new = 0
 
         else:
