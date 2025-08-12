@@ -23,7 +23,6 @@ import numpy as np
 
 from yndf.nethack_level import GLYPH_TABLE, DungeonLevel
 from yndf.nethack_state import NethackState
-from yndf.movement import UNPASSABLE_WAVEFRONT
 
 # pylint: disable=c-extension-no-member,invalid-name
 
@@ -175,31 +174,11 @@ class TerminalWidget(QtWidgets.QWidget):
 
         tooltip.append(self.state.get_screen_description((gy, gx)))
         tooltip.append(f"Pos: ({gy}, {gx})")
-        tooltip.append(f"Glyph: {str(self.state.glyphs[gy][gx])}, Char: {ch}, Color: {color}")
-        tooltip.append(f"Floor Glyph: {self.state.floor_glyphs[gy, gx]}")
-
+        tooltip.append(f"Glyph: {str(self.state.floor.glyphs[gy][gx])}, Char: {ch}, Color: {color}")
         tooltip.append(f"props: {self._get_property_string(self.state.floor.properties[gy, gx])}")
+        tooltip.append(f"Search Count: {self.state.floor.search_count[gy, gx]}")
         tooltip.append(f"search score: {self.state.floor.search_score[gy, gx]:.2f}")
-
-        wave_val = self.state.floor.wavefront[gy, gx]
-        if wave_val == UNPASSABLE_WAVEFRONT:
-            tooltip.append("Wavefront: Unpassable")
-        else:
-            tooltip.append(f"Wavefront: {wave_val}")
-
-        search_scores = self.state.search_state.search_scores
-        if search_scores is not None and getattr(search_scores, "shape", None) is not None:
-            py, px = self.state.player.position
-            h, w = search_scores.shape[0], search_scores.shape[1]
-            top = py - (h // 2)
-            left = px - (w // 2)
-
-            # Is (gy, gx) within the search_scores window?
-            if top <= gy < top + h and left <= gx < left + w:
-                sy = gy - top
-                sx = gx - left
-                val = float(search_scores[sy, sx])
-                tooltip.append(f"Search score: {val:.2f}")
+        tooltip.append(f"Wavefront: {self.state.floor.wavefront[gy, gx]}")
 
         return "\n".join(tooltip)
 

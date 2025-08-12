@@ -4,7 +4,11 @@ import gymnasium as gym
 import numpy as np
 
 from yndf.nethack_state import NethackState
-from yndf.movement import DIRECTIONS
+
+
+CARDINALS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+DIAGONALS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+DIRECTIONS = CARDINALS + DIAGONALS
 
 class NethackObsWrapper(gym.Wrapper):
     """Convert NLE observation → dict(glyphs, visited_mask, agent_yx)."""
@@ -32,7 +36,7 @@ class NethackObsWrapper(gym.Wrapper):
 
         glyphs = obs["glyphs"].astype(np.int16)
         agent_yx = np.array(state.player.position, dtype=np.int16)
-        visited = state.visited.copy()
+        visited = (state.floor.properties & state.floor.VISITED) != 0
         return {
             "glyphs": glyphs,
             "visited_mask": visited,
@@ -41,18 +45,14 @@ class NethackObsWrapper(gym.Wrapper):
         }
 
     def _calculate_wavefront_hints(self, state: NethackState) -> np.ndarray:
-        wavefront = state.floor.wavefront
-        hints = np.zeros(8, dtype=np.int8)
+        wf = state.floor.wavefront
         y, x = state.player.position
+        curr = int(wf[y, x])  # avoid unsigned underflow
+        hints = np.zeros(8, dtype=np.int8)
 
-        curr = wavefront[y, x]
-        for direction in DIRECTIONS:
-            dy, dx = direction
+        for i, (dy, dx) in enumerate(DIRECTIONS):
             ny, nx = y + dy, x + dx
-            if 0 <= ny < wavefront.shape[0] and 0 <= nx < wavefront.shape[1]:
-                if wavefront[ny, nx] < curr:
-                    hints[DIRECTIONS.index(direction)] = 1
-                elif wavefront[ny, nx] > curr:
-                    hints[DIRECTIONS.index(direction)] = -1
-
+            if 0 <= ny < wf.shape[0] and 0 <= nx < wf.shape[1]:
+                v = int(wf[ny, nx])
+                hints[i] = 1 if v < curr else (-1 if v > curr else 0)
         return hints

@@ -1,10 +1,7 @@
 """Conditions for the end of an episode."""
 
-import numpy as np
-
-from yndf.movement import GlyphKind
+from yndf.nethack_level import GLYPH_TABLE, DungeonLevel
 from yndf.nethack_state import NethackState
-
 
 class Ending:
     """A class to check whether an ending condition has been met."""
@@ -58,7 +55,8 @@ class NoForwardPathWithoutSearching(Ending):
         """Check if there is no forward path without searching."""
         super().step(state)
 
-        self._truncated = not np.isin(state.glyph_kinds, [GlyphKind.EXIT.value, GlyphKind.FRONTIER.value]).any()
+        exits_or_frontiers = (state.level.properties & (GLYPH_TABLE.DESCEND_LOCATION | DungeonLevel.FRONTIER)) != 0
+        self._terminated = not exits_or_frontiers.any()
 
 class NoDiscovery(Ending):
     """An ending condition that checks for no discovery."""
@@ -90,7 +88,7 @@ class NoDiscovery(Ending):
         elif self._prev.player.gold < state.player.gold:
             self._steps_since_new = 0
 
-        elif self._prev.stone_tile_count > state.stone_tile_count:
+        elif self._prev.floor.stone_tile_count > state.floor.stone_tile_count:
             self._steps_since_new = 0
 
         else:

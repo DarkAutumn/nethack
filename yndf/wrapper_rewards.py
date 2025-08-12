@@ -81,7 +81,7 @@ class NethackRewardWrapper(gym.Wrapper):
 
     def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState, action_is_search: bool):
         """Check if any new tiles were revealed."""
-        revealed = self._prev.stone_tile_count - state.stone_tile_count
+        revealed = self._prev.floor.stone_tile_count - state.floor.stone_tile_count
         if revealed > 0:
             if action_is_search:
                 value = Rewards.SEARCH_SUCCESS.value + min(Rewards.REVEALED_TILE.value * revealed, 0.2)
@@ -92,7 +92,8 @@ class NethackRewardWrapper(gym.Wrapper):
         else:
             # give a larger reward for grabbing items off of the floor, which is effectively what
             # this is checking
-            if prev.floor.wavefront[state.player.position] == 0 and not prev.visited[state.player.position]:
+            prev_visited = (prev.floor.properties & prev.floor.VISITED) != 0
+            if prev.floor.wavefront[state.player.position] == 0 and not prev_visited[state.player.position]:
                 reward_list.append(Rewards.REACHED_FRONTIER)
 
     def _check_state_changes(self, reward_list, prev : NethackState, state : NethackState):

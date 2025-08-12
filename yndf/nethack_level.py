@@ -82,7 +82,7 @@ class GlyphLookupTable:
     STONE = _bit(21)
     PLAYER = _bit(22)
 
-    MAX = _bit(23)
+    UNUSED_BIT = 23
 
     FLOOR_MASK = CMAP | WALL | FLOOR | CORRIDOR | OPEN_DOOR | CLOSED_DOOR | DESCEND_LOCATION | STONE | TRAP
 
@@ -263,15 +263,16 @@ def _shift_se(a):
 
 class DungeonLevel:
     """A class to represent the current state of the dungeon floor."""
-    UNSEEN_STONE = GLYPH_TABLE.MAX
-    VISITED = GLYPH_TABLE.MAX << 1
-    FRONTIER = GLYPH_TABLE.MAX << 2
-    TARGET = GLYPH_TABLE.MAX << 3
+    UNSEEN_STONE = _bit(GLYPH_TABLE.UNUSED_BIT)
+    VISITED = _bit(GLYPH_TABLE.UNUSED_BIT + 1)
+    FRONTIER = _bit(GLYPH_TABLE.UNUSED_BIT + 2)
+    TARGET = _bit(GLYPH_TABLE.UNUSED_BIT + 3)
+    LOCKED_DOOR = _bit(GLYPH_TABLE.UNUSED_BIT + 4)
 
-    def __init__(self, glyphs: np.ndarray, unpassable : np.ndarray, prev : 'DungeonLevel' = None):
+    def __init__(self, glyphs: np.ndarray, unpassable, locked, prev : 'DungeonLevel' = None):
         self.glyphs = glyphs
 
-        self.properties = GLYPH_TABLE.properties[glyphs] & (GLYPH_TABLE.MAX - 1)
+        self.properties = GLYPH_TABLE.properties[glyphs] & ((1 << GLYPH_TABLE.UNUSED_BIT) - 1)
         player = (self.properties & GLYPH_TABLE.PLAYER) != 0
         self.properties[player] |= self.VISITED
 
@@ -291,7 +292,11 @@ class DungeonLevel:
             unvisit  = visited_with_monster & objects
             self.properties[unvisit] &= ~self.VISITED
 
-        self.properties[unpassable] &= ~GLYPH_TABLE.PASSABLE
+        for pos in locked:
+            self.properties[pos] |= self.LOCKED_DOOR
+
+        for pos in unpassable:
+            self.properties[pos] &= ~GLYPH_TABLE.PASSABLE
 
         unseen_stone_mask = self._calculate_unseen_stone()
         self.properties[unseen_stone_mask] |= self.UNSEEN_STONE
@@ -302,8 +307,21 @@ class DungeonLevel:
         target_mask = self._get_target_mask()
         self.properties[target_mask] |= self.TARGET
 
+        self.search_count = prev.search_count if prev else np.zeros_like(self.glyphs, dtype=np.uint8)
         self.search_score = self._compute_search_score()
         self.wavefront = self._calculate_wavefront()
+
+    @property
+    def num_enemies(self):
+        """Count of visible enemies on the level."""
+        enemies = (self.properties & (GLYPH_TABLE.MONSTER | GLYPH_TABLE.PET)) == GLYPH_TABLE.MONSTER
+        return np.sum(enemies)
+
+    @property
+    def stone_tile_count(self):
+        """Count of stone tiles on the level."""
+        stone = (self.properties & GLYPH_TABLE.STONE) != 0
+        return np.sum(stone)
 
     def _calculate_unseen_stone(self):
         visited = (self.properties & self.VISITED) != 0
@@ -523,43 +541,17 @@ class DungeonLevel:
         return score.astype(np.float32)
 
     def _calculate_dead_end_mask(self) -> np.ndarray:
-        props = self.properties
-        corridor = (props & GLYPH_TABLE.CORRIDOR) != 0
-        passable = (props & GLYPH_TABLE.PASSABLE) != 0
+        corr = (self.properties & GLYPH_TABLE.CORRIDOR) != 0
+        passable = (self.properties & GLYPH_TABLE.PASSABLE) != 0
 
-        # neighbor shifts
-        def n(a):
-            o = np.zeros_like(a, bool)
-            o[1:, :]  = a[:-1, :]
-            return o
-        def s(a):
-            o = np.zeros_like(a, bool)
-            o[:-1, :] = a[1:,  :]
-            return o
-        def w(a):
-            o = np.zeros_like(a, bool)
-            o[:, 1:]  = a[:, :-1]
-            return o
-        def e(a):
-            o = np.zeros_like(a, bool)
-            o[:, :-1] = a[:,  1:]
-            return o
+        # count cardinal corridor neighbors
+        nbh = np.zeros_like(corr, dtype=np.uint8)
+        nbh[1:,  :] += passable[:-1, :]
+        nbh[:-1, :] += passable[ 1:, :]
+        nbh[:, 1:]  += passable[:, :-1]
+        nbh[:, :-1] += passable[:,  1:]
 
-        corr_n, corr_s, corr_w, corr_e = n(corridor), s(corridor), w(corridor), e(corridor)
-        pass_n, pass_s, pass_w, pass_e = n(passable), s(passable), w(passable), e(passable)
-
-        # corridor neighbor count (cardinals)
-        corr_nb = (
-            corr_n.astype(np.uint8) + corr_s.astype(np.uint8) +
-            corr_w.astype(np.uint8) + corr_e.astype(np.uint8)
-        )
-
-        # any passable neighbor that is NOT a corridor? (e.g., room floor)
-        noncorr_pass = (pass_n & ~corr_n) | (pass_s & ~corr_s) | (pass_w & ~corr_w) | (pass_e & ~corr_e)
-
-        # dead-end tip: corridor cell with ≤1 corridor neighbor, and no non-corridor passable neighbor
-        dead_end = corridor & (corr_nb <= 1) & ~noncorr_pass
-        return dead_end
+        return corr & (nbh <= 1)
 
     def _calculate_unseen_mass_adjacent(self, depth=7, half_width=3):
         # Precompute once per frame
