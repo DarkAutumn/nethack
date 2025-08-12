@@ -33,6 +33,7 @@ class NethackActionWrapper(gym.Wrapper):
             self._action_directions[actions.index(direction)] = (dy, dx)
 
         self.kick_index = self._get_index_or_none(nethack.Command.KICK, actions)
+        self.search_index = self._get_index_or_none(nethack.Command.SEARCH, actions)
         self._descend_index = self._get_index_or_none(nethack.MiscDirection.DOWN, actions)
 
         self._unwrapped_actions = self.unwrapped.actions

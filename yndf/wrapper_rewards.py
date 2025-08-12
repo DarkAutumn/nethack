@@ -1,10 +1,9 @@
 """A wrapper that calculates rewards for nethack gameplay."""
 
-from enum import Enum
 import gymnasium as gym
-import numpy as np
+from nle import nethack
+from endings import NoDiscovery, NoForwardPathWithoutSearching
 from yndf.nethack_state import NethackState
-from yndf.movement import GlyphKind, SolidGlyphs
 
 class Reward:
     """A simple class to represent a reward with a name and value."""
@@ -32,39 +31,44 @@ class Rewards:
     REVEALED_TILE = Reward("revealed-tile", 0.01, max_value=0.05)
     REACHED_FRONTIER = Reward("reached-frontier", 0.05)
     SUCCESS = Reward("success", 1.0)  # mini-scenario completed
+    SEARCH_SUCCESS = Reward("search-success", 0.01, max_value=0.05)
 
-class Endings(Enum):
-    """Enum for different types of endings."""
-    SUCCESS = 0
-    DEATH = 1
-    NO_DISCOVERY = 2
-    NO_PATH = 3
 
 class NethackRewardWrapper(gym.Wrapper):
     """Convert NLE reward to a more useful form."""
     def __init__(self, env: gym.Env, has_search: bool = False) -> None:
         super().__init__(env)
-        self._steps_since_new = 0
         self._prev : NethackState = None
         self._has_search = has_search
+
+        self.no_discovery = NoDiscovery()
+        self.endings = [self.no_discovery]
+        if not has_search:
+            self.endings.append(NoForwardPathWithoutSearching())
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
         self._prev = info["state"]
-        self._steps_since_new = 0
+
+        for ending in self.endings:
+            ending.reset(self._prev)
 
         return obs, info
 
     def step(self, action):  # type: ignore[override]
         obs, reward, terminated, truncated, info = self.env.step(action)
+        action_is_search = action == self.unwrapped.actions.index(nethack.Command.SEARCH)
 
         reward_list = [Rewards.STEP]
         state: NethackState = info["state"]
 
-        terminated, truncated = self._check_endings(terminated, truncated, info, state, reward_list)
         if not terminated and not truncated:
             self._check_state_changes(reward_list, self._prev, state)
-            self._check_revealed_tiles(reward_list, self._prev, state)
+            self._check_revealed_tiles(reward_list, self._prev, state, action_is_search)
+            terminated, truncated, reason = self._check_endings(state)
+            if terminated or truncated:
+                assert reason is not None, "Ending condition should have a reason."
+                info['ending'] = reason
 
         reward = 0.0
         details = info["rewards"] = {}
@@ -75,68 +79,54 @@ class NethackRewardWrapper(gym.Wrapper):
         self._prev = state
         return obs, reward, terminated, truncated, info
 
-    def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState):
+    def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState, action_is_search: bool):
         """Check if any new tiles were revealed."""
-        prev_stones = (prev.floor_glyphs == SolidGlyphs.S_stone.value).sum()
-        new_stones = (state.floor_glyphs == SolidGlyphs.S_stone.value).sum()
-
-        revealed = prev_stones - new_stones
+        revealed = self._prev.stone_tile_count - state.stone_tile_count
         if revealed > 0:
-            reward_list.append(Rewards.REVEALED_TILE * revealed)
-            self._steps_since_new = 0
+            if action_is_search:
+                value = Rewards.SEARCH_SUCCESS.value + min(Rewards.REVEALED_TILE.value * revealed, 0.2)
+                reward_list.append(Reward(Rewards.SEARCH_SUCCESS.name, value))
+
+            else:
+                reward_list.append(Rewards.REVEALED_TILE * revealed)
         else:
             # give a larger reward for grabbing items off of the floor, which is effectively what
             # this is checking
             if prev.wavefront[state.player.position] == 0 and not prev.visited[state.player.position]:
                 reward_list.append(Rewards.REACHED_FRONTIER)
-                self._steps_since_new = 0
 
     def _check_state_changes(self, reward_list, prev : NethackState, state : NethackState):
         if prev.player.depth < state.player.depth:
             reward_list.append(Rewards.DESCENDED)
-            self._steps_since_new = 0
 
         if prev.player.hp > state.player.hp:
             reward_list.append(Rewards.HURT)
 
         if prev.player.exp < state.player.exp:
             reward_list.append(Rewards.KILL)
-            self._steps_since_new = 0
 
         if prev.player.level < state.player.level:
             reward_list.append(Rewards.LEVEL_UP)
 
         if prev.player.gold < state.player.gold:
             reward_list.append(Rewards.GOLD)
-            self._steps_since_new = 0
 
             # only reward score if we missed to rewarding something that increases it
         if prev.player.score < state.player.score and not reward_list:
             reward_list.append(Rewards.SCORE)
 
-    def _check_endings(self, terminated, truncated, info, state, reward_list):
-        if info['end_status'] == 1: # death
-            reward_list.append(Rewards.DEATH)
-            info['ending'] = Endings.DEATH
-            terminated = True
-            truncated = False
+    def _check_endings(self, state):
+        """Check if any ending conditions have been met.  Returns (terminated, truncated, reason)."""
+        # No way to continue after a game over, so it's not an Ending condition
+        if state.game_over:
+            return True, False, self.unwrapped.nethack.how_done()
 
-        else:
-            # did we visit a new cell?
-            if state.visited.sum() == self._prev.visited.sum():
-                self._steps_since_new += 1
-                if self._steps_since_new > 100:
-                    truncated = self._steps_since_new > 100
-                    info['ending'] = Endings.NO_DISCOVERY
+        for ending in self.endings:
+            ending.step(state)
+            if ending.terminated or ending.truncated:
+                return ending.terminated, ending.truncated, ending.name
 
-            # do we have no way to make progress?
-            if not self._has_search:
-                if not np.isin(state.glyph_kinds, [GlyphKind.EXIT.value, GlyphKind.FRONTIER.value]).any():
-                    terminated = True
-                    info['ending'] = Endings.SUCCESS
-                    reward_list.append(Rewards.SUCCESS)
-
-        return terminated, truncated
+        return False, False, None
 
     def merge_reward_info(self, info: dict, new_info: dict):
         """Merge new reward information into the existing info dictionary."""

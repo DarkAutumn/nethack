@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import cProfile
 from collections import Counter
 from pathlib import Path
+import pstats
 from typing import Callable
 
 import gymnasium as gym
@@ -14,11 +16,12 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 import yndf
+from yndf.wrapper_profiler import ProfilingWrapper
 
 # ----------------------------- Actions ------------------------------------- #
 MOVE_ACTIONS = tuple(nethack.CompassDirection)       # 8 directions
 DESCEND_ACTION = (nethack.MiscDirection.DOWN,)       # '>'
-OTHER_ACTIONS = (nethack.Command.KICK,)
+OTHER_ACTIONS = (nethack.Command.KICK, nethack.Command.SEARCH)
 ACTIONS = MOVE_ACTIONS + DESCEND_ACTION + OTHER_ACTIONS
 
 # Target total rollout size per update across all envs.
@@ -134,7 +137,8 @@ def main(
     output_dir: str = "models/",
     log_dir: str = "logs/",
     name: str = "nethack",
-    save_replays: bool = True
+    save_replays: bool = True,
+    profile: bool = False,
 ) -> None:
     """Train an agent to play NetHack.
 
@@ -150,20 +154,26 @@ def main(
     out_path.mkdir(parents=True, exist_ok=True)
     log_path.mkdir(parents=True, exist_ok=True)
 
+    assert not profile or parallel <= 1, "Profiling requires single-threaded execution (parallel=1)."
+
     def _make_env(_: int) -> Callable[[], gym.Env]:
         """Factory for creating a single environment instance."""
         def _init() -> gym.Env:
             return gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=save_replays)
         return _init
 
+    profiler = None
     if parallel <= 1:
         n_envs = 1
         env = _make_env(0)()
+        if profile:
+            profiler = cProfile.Profile()
+            env = ProfilingWrapper(env, profiler)
+
     else:
         n_envs = parallel
         env = SubprocVecEnv([_make_env(i) for i in range(n_envs)], start_method="fork")
         env = VecMonitor(env)
-
 
     # Keep total rollout size roughly constant across different parallelism.
     n_steps_per_env = max(1, ROLLOUT_TARGET // n_envs)
@@ -193,10 +203,17 @@ def main(
         n_steps=n_steps_per_env,
         tensorboard_log=str(log_path),
     )
+
     model.learn(total_timesteps=total_timesteps, progress_bar=True, callback=callbacks)
     model.save(str(out_path / model_file_name_base))
 
     print("Training finished and model saved.")
+    if profiler:
+        profiler.disable()
+        profiler.dump_stats(str(out_path / f"{model_file_name_base}_profile.prof"))
+        print(f"Profiling data saved to {out_path / f'{model_file_name_base}_profile.prof'}")
+        stats = pstats.Stats(profiler)
+        stats.strip_dirs().sort_stats('cumulative').print_stats(50)
 
 
 if __name__ == "__main__":
@@ -236,8 +253,16 @@ if __name__ == "__main__":
         default="nethack",
         help="Base name for the model files (default: 'nethack').",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable profiling of the training process (single-threaded).",
+        default=False,
+    )
 
     args = parser.parse_args()
+    if args.profile:
+        args.parallel = 1  # Profiling requires single-threaded execution
 
     main(
         total_timesteps=args.timesteps,
@@ -246,4 +271,5 @@ if __name__ == "__main__":
         name=args.name,
         log_dir=args.log_dir,
         save_replays=args.save_replays,
+        profile=args.profile
     )
