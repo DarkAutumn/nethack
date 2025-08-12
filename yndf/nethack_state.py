@@ -1,6 +1,7 @@
 """The state of nethack at the current timestep.  All wrappers should interact with this instead of using
 observation directly."""
 
+from functools import cached_property
 import math
 from typing import Optional, Tuple
 from nle import nethack
@@ -211,6 +212,8 @@ class NethackState:
 
         self.search_state = SearchState(self, prev.search_state if prev_is_usable else None)
 
+        self.game_over = info['end_status'] == 1  # death
+
     @property
     def visible_enemies(self):
         """Check if there are any visible enemies."""
@@ -219,6 +222,10 @@ class NethackState:
 
         mask = is_mon(self.glyphs) & ~is_pet(self.glyphs) & (self.glyphs != AGENT_GLYPH)
         return np.any(mask)
+    @cached_property
+    def stone_tiles(self):
+        """Get the number of stone tiles."""
+        return (self.floor_glyphs == SolidGlyphs.S_stone.value).sum()
 
     @property
     def tty_chars(self):

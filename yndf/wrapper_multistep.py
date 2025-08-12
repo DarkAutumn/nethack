@@ -44,24 +44,26 @@ class NethackMultistepActionWrapper(gym.Wrapper):
             start_state.search_state.search_counts[start_state.player.position] += 1
 
             # we already searched once at the top of the method
-            times_to_search = self.max_search - start_state.search_state.search_counts[start_state.player.position] - 1
+            already_searched = start_state.search_state.search_counts[start_state.player.position]
+            if already_searched < self.max_search:
+                times_to_search = self.max_search - already_searched
 
-            state = start_state
-            for _ in range(times_to_search):
-                # If there are visible enemies, we can't search
-                if state.visible_enemies or terminated or truncated:
-                    break
+                state = start_state
+                for _ in range(times_to_search):
+                    # If there are visible enemies, we can't search
+                    if state.visible_enemies or terminated or truncated:
+                        break
 
-                # did we reveal any new tiles?
-                prev_stones = (start_state.floor_glyphs == SolidGlyphs.S_stone.value).sum()
-                new_stones = (state.floor_glyphs == SolidGlyphs.S_stone.value).sum()
-                if prev_stones > new_stones:
-                    break
+                    # did we reveal any new tiles?
+                    prev_stones = (start_state.floor_glyphs == SolidGlyphs.S_stone.value).sum()
+                    new_stones = (state.floor_glyphs == SolidGlyphs.S_stone.value).sum()
+                    if prev_stones > new_stones:
+                        break
 
-                obs, reward2, terminated, truncated, info2 = self.env.step(self.actions.search_index)
-                state = info2['state']
-                state.search_state.search_counts[state.player.position] += 1
-                reward += reward2
-                self.rewards.merge_reward_info(info, info2)
+                    obs, reward2, terminated, truncated, info2 = self.env.step(self.actions.search_index)
+                    state = info2['state']
+                    state.search_state.search_counts[state.player.position] += 1
+                    reward += reward2
+                    self.rewards.merge_reward_info(info, info2)
 
         return obs, reward, terminated, truncated, info
