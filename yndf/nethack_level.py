@@ -1,6 +1,5 @@
 from enum import Enum
 from collections import deque
-from typing import Tuple
 from nle import nethack
 import numpy as np
 
@@ -81,8 +80,9 @@ class GlyphLookupTable:
     OPEN_DOOR = _bit(19)
     CLOSED_DOOR = _bit(20)
     STONE = _bit(21)
+    PLAYER = _bit(22)
 
-    MAX = _bit(22)
+    MAX = _bit(23)
 
     FLOOR_MASK = CMAP | WALL | FLOOR | CORRIDOR | OPEN_DOOR | CLOSED_DOOR | DESCEND_LOCATION | STONE | TRAP
 
@@ -140,10 +140,13 @@ class GlyphLookupTable:
             properties |= self.DETECTED_MONSTER
         if nethack.glyph_is_invisible(glyph):
             properties |= self.INVISIBLE
-        if nethack.glyph_is_monster(glyph):
-            properties |= self.MONSTER
-        if nethack.glyph_is_normal_monster(glyph):
-            properties |= self.NORMAL_MONSTER
+        if glyph == 333:
+            properties |= self.PLAYER
+        else:
+            if nethack.glyph_is_monster(glyph):
+                properties |= self.MONSTER
+            if nethack.glyph_is_normal_monster(glyph):
+                properties |= self.NORMAL_MONSTER
         if nethack.glyph_is_object(glyph):
             properties |= self.OBJECT
         if nethack.glyph_is_pet(glyph):
@@ -168,11 +171,14 @@ class DungeonLevel:
     VISITED = GLYPH_TABLE.MAX
     FRONTIER = GLYPH_TABLE.MAX << 1
     TARGET = GLYPH_TABLE.MAX << 2
+    DEAD_END = GLYPH_TABLE.MAX << 3
 
     def __init__(self, glyphs: np.ndarray, unpassable : np.ndarray, prev : 'DungeonLevel' = None):
         self.glyphs = glyphs
 
         self.properties = GLYPH_TABLE.properties[glyphs] & (GLYPH_TABLE.MAX - 1)
+        player = (self.properties & GLYPH_TABLE.PLAYER) != 0
+        self.properties[player] |= self.VISITED
 
         # If we have a previous state, use that to determine what's under movable glyphs
         if prev is not None:
@@ -199,13 +205,6 @@ class DungeonLevel:
         self.properties[target_mask] |= self.TARGET
 
         self.wavefront = self._calculate_wavefront()
-
-    def mark_visited(self, position: Tuple[int, int], visited=True) -> None:
-        """Mark a tile as visited."""
-        if visited:
-            self.properties[position] |= self.VISITED
-        else:
-            self.properties[position] &= ~self.VISITED
 
     def _calculate_frontier_mask(self) -> np.ndarray:
         props = self.properties

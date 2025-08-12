@@ -252,7 +252,7 @@ class NethackState:
         unpassable_mask = np.zeros_like(self.floor_glyphs, dtype=bool)
         for pos in unpassable:
             unpassable_mask[pos] = True
-        self.floor = DungeonLevel(self.floor_glyphs, unpassable_mask, prev.floor if prev_is_usable else None)
+        self.floor = DungeonLevel(self.glyphs, unpassable_mask, prev.floor if prev_is_usable else None)
 
         wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.glyphs, self.floor_glyphs,
                                                                      self.visited, unpassable)
