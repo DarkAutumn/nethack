@@ -41,7 +41,7 @@ class NethackObsWrapper(gym.Wrapper):
         }
 
     def _calculate_wavefront_hints(self, state: NethackState) -> np.ndarray:
-        wavefront = state.wavefront
+        wavefront = state.floor.wavefront
         hints = np.zeros(8, dtype=np.int8)
         y, x = state.player.position
 

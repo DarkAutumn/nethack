@@ -92,7 +92,7 @@ class NethackRewardWrapper(gym.Wrapper):
         else:
             # give a larger reward for grabbing items off of the floor, which is effectively what
             # this is checking
-            if prev.wavefront[state.player.position] == 0 and not prev.visited[state.player.position]:
+            if prev.floor.wavefront[state.player.position] == 0 and not prev.visited[state.player.position]:
                 reward_list.append(Rewards.REACHED_FRONTIER)
 
     def _check_state_changes(self, reward_list, prev : NethackState, state : NethackState):

@@ -9,6 +9,7 @@ import numpy as np
 
 from yndf.movement import CLOSED_DOORS, OPEN_DOORS, GlyphKind, PassableGlyphs, SolidGlyphs, \
                     calculate_wavefront_and_glyph_kinds
+from yndf.nethack_level import DungeonLevel
 
 CARDINALS: Tuple[Tuple[int, int], ...] = ((-1, 0), (0, 1), (1, 0), (0, -1))
 
@@ -248,6 +249,11 @@ class NethackState:
                       for boulder in self.stuck_boulders
                       if boulder.player_position == self.player.position] if self.stuck_boulders else []
 
+        unpassable_mask = np.zeros_like(self.floor_glyphs, dtype=bool)
+        for pos in unpassable:
+            unpassable_mask[pos] = True
+        self.floor = DungeonLevel(self.floor_glyphs, unpassable_mask, prev.floor if prev_is_usable else None)
+
         wavefront, glyph_kinds = calculate_wavefront_and_glyph_kinds(self.glyphs, self.floor_glyphs,
                                                                      self.visited, unpassable)
         self.wavefront = wavefront
@@ -430,7 +436,7 @@ class SearchState:
         # Something you could plausibly reveal a secret through (room wall or rock)
         return self._is_wall(g) or self._is_stone(g)
 
-    def _is_standable(self, g: int) -> bool:
+    def _is_passable(self, g: int) -> bool:
         # Where the agent can stand to perform a search
         if self._is_closed_door(g):
             return False
@@ -526,7 +532,7 @@ class SearchState:
                     continue
 
                 g_here = floor_glyphs[ty, tx]
-                if not self._is_standable(g_here):
+                if not self._is_passable(g_here):
                     continue
 
                 best = 0.0
