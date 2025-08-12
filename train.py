@@ -18,7 +18,7 @@ import yndf
 # ----------------------------- Actions ------------------------------------- #
 MOVE_ACTIONS = tuple(nethack.CompassDirection)       # 8 directions
 DESCEND_ACTION = (nethack.MiscDirection.DOWN,)       # '>'
-OTHER_ACTIONS = (nethack.Command.KICK,)
+OTHER_ACTIONS = (nethack.Command.KICK, nethack.Command.SEARCH)
 ACTIONS = MOVE_ACTIONS + DESCEND_ACTION + OTHER_ACTIONS
 
 # Target total rollout size per update across all envs.

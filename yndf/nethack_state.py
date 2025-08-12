@@ -17,6 +17,7 @@ _HALF_WEDGE_WIDTH = 3     # lateral half-width of the wedge
 _UNKNOWN_NORM = 20.0      # unknown tiles to reach score multiplier ~1.0
 _SEARCH_DECAY_TAU = 6.0   # e^{-searched / tau} decay
 
+AGENT_GLYPH = 333
 
 def _perps(dy: int, dx: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
     # Two perpendicular unit vectors to (dy, dx)
@@ -208,7 +209,16 @@ class NethackState:
             else:
                 self.floor_glyphs[door] = OPEN_DOORS[0]  # assume it's an open door
 
-        self.search_state = SearchState(self)
+        self.search_state = SearchState(self, prev.search_state if prev_is_usable else None)
+
+    @property
+    def visible_enemies(self):
+        """Check if there are any visible enemies."""
+        is_mon = np.vectorize(nethack.glyph_is_monster)
+        is_pet = np.vectorize(nethack.glyph_is_pet)
+
+        mask = is_mon(self.glyphs) & ~is_pet(self.glyphs) & (self.glyphs != AGENT_GLYPH)
+        return np.any(mask)
 
     @property
     def tty_chars(self):
@@ -290,9 +300,10 @@ class NethackState:
 
 class SearchState:
     """A state that tracks search progress."""
-    def __init__(self, state: NethackState):
+    def __init__(self, state: NethackState, prev_search_state: Optional['SearchState'] = None):
         self._state = state
-        self.search_counts = np.zeros_like(state.floor_glyphs, dtype=np.uint16)
+        self.search_counts = prev_search_state.search_counts.copy() if prev_search_state \
+                             else np.zeros_like(state.floor_glyphs, dtype=np.uint16)
         self.search_scores = self._calculate_search_score()
 
     @staticmethod

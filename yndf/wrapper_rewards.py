@@ -3,6 +3,7 @@
 from enum import Enum
 import gymnasium as gym
 import numpy as np
+from nle import nethack
 from yndf.nethack_state import NethackState
 from yndf.movement import GlyphKind, SolidGlyphs
 
@@ -32,6 +33,7 @@ class Rewards:
     REVEALED_TILE = Reward("revealed-tile", 0.01, max_value=0.05)
     REACHED_FRONTIER = Reward("reached-frontier", 0.05)
     SUCCESS = Reward("success", 1.0)  # mini-scenario completed
+    SEARCH_SUCCESS = Reward("search-success", 0.01, max_value=0.05)
 
 class Endings(Enum):
     """Enum for different types of endings."""
@@ -57,6 +59,7 @@ class NethackRewardWrapper(gym.Wrapper):
 
     def step(self, action):  # type: ignore[override]
         obs, reward, terminated, truncated, info = self.env.step(action)
+        action_is_search = action == self.unwrapped.actions.index(nethack.Command.SEARCH)
 
         reward_list = [Rewards.STEP]
         state: NethackState = info["state"]
@@ -64,7 +67,7 @@ class NethackRewardWrapper(gym.Wrapper):
         terminated, truncated = self._check_endings(terminated, truncated, info, state, reward_list)
         if not terminated and not truncated:
             self._check_state_changes(reward_list, self._prev, state)
-            self._check_revealed_tiles(reward_list, self._prev, state)
+            self._check_revealed_tiles(reward_list, self._prev, state, action_is_search)
 
         reward = 0.0
         details = info["rewards"] = {}
@@ -75,14 +78,20 @@ class NethackRewardWrapper(gym.Wrapper):
         self._prev = state
         return obs, reward, terminated, truncated, info
 
-    def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState):
+    def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState, action_is_search: bool):
         """Check if any new tiles were revealed."""
         prev_stones = (prev.floor_glyphs == SolidGlyphs.S_stone.value).sum()
         new_stones = (state.floor_glyphs == SolidGlyphs.S_stone.value).sum()
 
         revealed = prev_stones - new_stones
         if revealed > 0:
-            reward_list.append(Rewards.REVEALED_TILE * revealed)
+            if action_is_search:
+                value = Rewards.SEARCH_SUCCESS.value + min(Rewards.REVEALED_TILE.value * revealed, 0.2)
+                reward_list.append(Reward(Rewards.SEARCH_SUCCESS.name, value))
+
+            else:
+                reward_list.append(Rewards.REVEALED_TILE * revealed)
+
             self._steps_since_new = 0
         else:
             # give a larger reward for grabbing items off of the floor, which is effectively what
