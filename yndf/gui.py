@@ -147,12 +147,12 @@ class TerminalWidget(QtWidgets.QWidget):
     def _get_property_string(self, prop: int) -> str:
         bits = []
         for i in range(32):
-            val = (1 << i)
+            val = 1 << i
             if prop & val:
                 if val in self._bit_mapping:
                     bits.append(self._bit_mapping[val])
 
-        return " ".join(bits) + f" {prop:#08x}"
+        return " ".join(bits)
 
     def getHoverText(self, x: int, y: int) -> str:
         """Get the text at the given coordinates, handling the 21x79 glyph map."""
@@ -179,6 +179,7 @@ class TerminalWidget(QtWidgets.QWidget):
         tooltip.append(f"Floor Glyph: {self.state.floor_glyphs[gy, gx]}")
 
         tooltip.append(f"props: {self._get_property_string(self.state.floor.properties[gy, gx])}")
+        tooltip.append(f"search score: {self.state.floor.search_score[gy, gx]:.2f}")
 
         wave_val = self.state.floor.wavefront[gy, gx]
         if wave_val == UNPASSABLE_WAVEFRONT:

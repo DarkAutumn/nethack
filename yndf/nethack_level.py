@@ -166,12 +166,107 @@ class GlyphLookupTable:
 
 GLYPH_TABLE = GlyphLookupTable()
 
+def _sat2d(a_bool: np.ndarray) -> np.ndarray:
+    """Summed-area table with top/left zero padding. sat.shape = (H+1, W+1)."""
+    sat = np.pad(a_bool.astype(np.int32), ((1,0), (1,0)))
+    np.cumsum(sat, axis=0, out=sat)
+    np.cumsum(sat, axis=1, out=sat)
+    return sat
+
+def _rect_sum(sat: np.ndarray, y0, y1, x0, x1):
+    """
+    Sum over half-open rectangle [y0:y1, x0:x1] for broadcastable y*/x* arrays.
+    All indices are already clamped into [0..H] / [0..W].
+    """
+    return sat[y1, x1] - sat[y0, x1] - sat[y1, x0] + sat[y0, x0]
+
+def _unseen_mass_by_dir(unseen_map : np.ndarray, depth: int, half_width: int):
+    """
+    Compute unseen mass 'behind' each cell for the 4 cardinals.
+    Returns (north, south, west, east) int32 arrays, same shape as props.
+    """
+    # pylint: disable=too-many-locals
+    h, w = unseen_map.shape
+    unseen = unseen_map
+    sat = _sat2d(unseen)
+
+    y = np.arange(h)[:, None]  # shape (H,1)
+    x = np.arange(w)[None, :]  # shape (1,W)
+
+    # Common clamped spans across the perpendicular axis
+    y0_band = np.clip(y - half_width, 0, h)
+    y1_band = np.clip(y + half_width + 1, 0, h)
+    x0_band = np.clip(x - half_width, 0, w)
+    x1_band = np.clip(x + half_width + 1, 0, w)
+
+    # EAST: rows [y0_band:y1_band], cols [x+1 : x+depth+1]
+    x0_e = x + 1
+    x1_e = np.minimum(w, x + depth + 1)
+    east  = _rect_sum(sat, y0_band, y1_band, x0_e, x1_e)
+
+    # WEST: rows [y0_band:y1_band], cols [x-depth : x]
+    x0_w = np.maximum(0, x - depth)
+    x1_w = x
+    west  = _rect_sum(sat, y0_band, y1_band, x0_w, x1_w)
+
+    # SOUTH: rows [y+1 : y+depth+1], cols [x0_band:x1_band]
+    y0_s = y + 1
+    y1_s = np.minimum(h, y + depth + 1)
+    south = _rect_sum(sat, y0_s, y1_s, x0_band, x1_band)
+
+    # NORTH: rows [y-depth : y], cols [x0_band:x1_band]
+    y0_n = np.maximum(0, y - depth)
+    y1_n = y
+    north = _rect_sum(sat, y0_n, y1_n, x0_band, x1_band)
+
+    return north, south, west, east  # int32 counts
+
+def _shift_n(a):  # has True if neighbor to the NORTH is True
+    out = np.zeros_like(a, dtype=bool)
+    out[1:, :] = a[:-1, :]
+    return out
+
+def _shift_s(a):
+    out = np.zeros_like(a, dtype=bool)
+    out[:-1, :] = a[1:, :]
+    return out
+
+def _shift_w(a):
+    out = np.zeros_like(a, dtype=bool)
+    out[:, 1:] = a[:, :-1]
+    return out
+
+def _shift_e(a):
+    out = np.zeros_like(a, dtype=bool)
+    out[:, :-1] = a[:, 1:]
+    return out
+
+def _shift_nw(a):
+    out = np.zeros_like(a, dtype=bool)
+    out[1:, 1:] = a[:-1, :-1]
+    return out
+
+def _shift_ne(a):
+    out = np.zeros_like(a, dtype=bool)
+    out[1:, :-1] = a[:-1, 1:]
+    return out
+
+def _shift_sw(a):
+    out = np.zeros_like(a, dtype=bool)
+    out[:-1, 1:] = a[1:, :-1]
+    return out
+
+def _shift_se(a):
+    out = np.zeros_like(a, dtype=bool)
+    out[:-1, :-1] = a[1:, 1:]
+    return out
+
 class DungeonLevel:
     """A class to represent the current state of the dungeon floor."""
-    VISITED = GLYPH_TABLE.MAX
-    FRONTIER = GLYPH_TABLE.MAX << 1
-    TARGET = GLYPH_TABLE.MAX << 2
-    DEAD_END = GLYPH_TABLE.MAX << 3
+    UNSEEN_STONE = GLYPH_TABLE.MAX
+    VISITED = GLYPH_TABLE.MAX << 1
+    FRONTIER = GLYPH_TABLE.MAX << 2
+    TARGET = GLYPH_TABLE.MAX << 3
 
     def __init__(self, glyphs: np.ndarray, unpassable : np.ndarray, prev : 'DungeonLevel' = None):
         self.glyphs = glyphs
@@ -198,39 +293,48 @@ class DungeonLevel:
 
         self.properties[unpassable] &= ~GLYPH_TABLE.PASSABLE
 
+        unseen_stone_mask = self._calculate_unseen_stone()
+        self.properties[unseen_stone_mask] |= self.UNSEEN_STONE
+
         frontier_mask = self._calculate_frontier_mask()
         self.properties[frontier_mask] |= self.FRONTIER
 
         target_mask = self._get_target_mask()
         self.properties[target_mask] |= self.TARGET
 
+        self.search_score = self._compute_search_score()
         self.wavefront = self._calculate_wavefront()
+
+    def _calculate_unseen_stone(self):
+        visited = (self.properties & self.VISITED) != 0
+        stone   = (self.properties & GLYPH_TABLE.STONE) != 0
+        visited_nbr    = self._any_neighbor(visited)
+        unseen_stone   = stone & ~visited_nbr
+        return unseen_stone
+
+    def _any_neighbor(self, a: np.ndarray) -> np.ndarray:
+        """8-neighbor OR; returns True where any neighbor of a is True."""
+        out = np.zeros_like(a, dtype=bool)
+        # cardinal
+        out[1:,  :] |= a[:-1, :]   # N
+        out[:-1, :] |= a[1:,  :]   # S
+        out[:, 1:]  |= a[:, :-1]   # W
+        out[:, :-1] |= a[:, 1:]    # E
+
+        # diagonals
+        out[1:, 1:]  |= a[:-1, :-1]  # NW
+        out[1:, :-1] |= a[:-1, 1:]   # NE
+        out[:-1, 1:] |= a[1:,  :-1]  # SW
+        out[:-1, :-1]|= a[1:,  1:]   # SE
+        return out
 
     def _calculate_frontier_mask(self) -> np.ndarray:
         props = self.properties
-        visited = (props & self.VISITED) != 0
-        stone   = (props & GLYPH_TABLE.STONE) != 0
         passbl  = (props & GLYPH_TABLE.PASSABLE) != 0
+        visited = (props & self.VISITED) != 0
+        unseen_stone = (props & self.UNSEEN_STONE) != 0
 
-        def any_neighbor(a: np.ndarray) -> np.ndarray:
-            """8-neighbor OR; returns True where any neighbor of a is True."""
-            out = np.zeros_like(a, dtype=bool)
-            # cardinal
-            out[1:,  :] |= a[:-1, :]   # N
-            out[:-1, :] |= a[1:,  :]   # S
-            out[:, 1:]  |= a[:, :-1]   # W
-            out[:, :-1] |= a[:, 1:]    # E
-
-            # diagonals
-            out[1:, 1:]  |= a[:-1, :-1]  # NW
-            out[1:, :-1] |= a[:-1, 1:]   # NE
-            out[:-1, 1:] |= a[1:,  :-1]  # SW
-            out[:-1, :-1]|= a[1:,  1:]   # SE
-            return out
-
-        visited_nbr    = any_neighbor(visited)
-        unseen_stone   = stone & ~visited_nbr
-        near_unseen    = any_neighbor(unseen_stone)
+        near_unseen    = self._any_neighbor(unseen_stone)
 
         frontier_mask  = passbl & ~visited & near_unseen
         return frontier_mask
@@ -295,3 +399,229 @@ class DungeonLevel:
                         if new_wave < wavefront_max:
                             q.append((ny, nx))
         return wave
+
+
+    def _compute_search_score(self, depth=7, half_width=3) -> np.ndarray:
+        props = self.properties
+        h, w = props.shape
+
+        # masks
+        passable = (props & GLYPH_TABLE.PASSABLE) != 0
+        corridor = (props & GLYPH_TABLE.CORRIDOR) != 0
+        floor    = (props & GLYPH_TABLE.FLOOR)    != 0
+        wall     = (props & GLYPH_TABLE.WALL)     != 0
+        stone    = (props & GLYPH_TABLE.STONE)    != 0
+        barrier  = wall | stone
+
+        # neighbor masks
+        wall_n, wall_s, wall_w, wall_e = _shift_n(wall), _shift_s(wall), _shift_w(wall), _shift_e(wall)
+        corr_n, corr_s, corr_w, corr_e = _shift_n(corridor), _shift_s(corridor), _shift_w(corridor), _shift_e(corridor)
+
+        # "adjacent wall present" gate
+        has_adj_wall = wall_n | wall_s | wall_w | wall_e
+
+        # diagonal-only access gate (optional but per your spec)
+        card_pass = _shift_n(passable) | _shift_s(passable) | _shift_w(passable) | _shift_e(passable)
+        diag_pass = _shift_nw(passable) | _shift_ne(passable) | _shift_sw(passable) | _shift_se(passable)
+        diag_only = (~card_pass) & diag_pass
+
+        # unseen mass (per direction) from the wall cell adjacent to (y,x)
+        unseen = (props & self.UNSEEN_STONE) != 0  # your UNSEEN flag over stone
+        m_n0, m_s0, m_w0, m_e0 = _unseen_mass_by_dir(unseen, depth, half_width)
+        m_n = np.zeros((h, w), np.int32)
+        m_n[1:,  :] = (m_n0[:-1,  :] * barrier[:-1,  :])
+        m_s = np.zeros((h, w), np.int32)
+        m_s[:-1, :] = (m_s0[1:,   :] * barrier[1:,   :])
+        m_w = np.zeros((h, w), np.int32)
+        m_w[:, 1:]  = (m_w0[:,  :-1] * barrier[:,  :-1])
+        m_e = np.zeros((h, w), np.int32)
+        m_e[:, :-1] = (m_e0[:,   1:] * barrier[:,   1:])
+        mass_any = np.maximum.reduce([m_n, m_s, m_w, m_e])
+
+        # wall run-length of the adjacent wall in each direction
+        run_h, run_v = self._calculate_wall_run_lengths(wall)
+        r_n = np.zeros((h, w), np.int16)
+        r_n[1:,  :] = (run_h[:-1,  :] * wall[:-1,  :])
+        r_s = np.zeros((h, w), np.int16)
+        r_s[:-1, :] = (run_h[1:,   :] * wall[1:,   :])
+        r_w = np.zeros((h, w), np.int16)
+        r_w[:, 1:]  = (run_v[:,  :-1] * wall[:,  :-1])
+        r_e = np.zeros((h, w), np.int16)
+        r_e[:, :-1] = (run_v[:,   1:] * wall[:,   1:])
+
+        # ---------- Base patterns (per-tile, take max) ----------
+        score = np.zeros((h, w), dtype=np.float32)
+
+        # 1) Corridor dead-end tip (you face the dead end): 1.0
+        #    Count *corridor* neighbors (cardinals).
+        dead_end = self._calculate_dead_end_mask()
+        base_dead = dead_end.astype(np.float32)
+
+        # use the largest unseen mass behind any adjacent barrier face
+        factor_dead = np.minimum(1.0, mass_any.astype(np.float32) / 20.0)
+        score = np.maximum(score, base_dead * factor_dead)
+
+        # 2) Room wall with ≥3 contiguous wall tiles and unknown beyond: 0.7
+        #    Check per direction from a ROOM tile.
+        room = floor  # your FLOOR flag denotes room floor
+        cond_n = room & wall_n & (r_n >= 3) & (m_n > 0)
+        cond_s = room & wall_s & (r_s >= 3) & (m_s > 0)
+        cond_w = room & wall_w & (r_w >= 3) & (m_w > 0)
+        cond_e = room & wall_e & (r_e >= 3) & (m_e > 0)
+
+        sc_n = np.where(cond_n, 0.7 * np.minimum(1.0, m_n.astype(np.float32) / 20.0), 0.0)
+        sc_s = np.where(cond_s, 0.7 * np.minimum(1.0, m_s.astype(np.float32) / 20.0), 0.0)
+        sc_w = np.where(cond_w, 0.7 * np.minimum(1.0, m_w.astype(np.float32) / 20.0), 0.0)
+        sc_e = np.where(cond_e, 0.7 * np.minimum(1.0, m_e.astype(np.float32) / 20.0), 0.0)
+        score = np.maximum.reduce([score, sc_n, sc_s, sc_w, sc_e])
+
+        # 3) Corridor bend with unknown behind the outer wall: 0.5
+        ns = corr_n | corr_s
+        ew = corr_w | corr_e
+        straight = (corr_n & corr_s) | (corr_w & corr_e)
+        bend = corridor & ns & ew & ~straight
+
+        outer_n = bend & (~corr_n) & wall_n & (m_n > 0)
+        outer_s = bend & (~corr_s) & wall_s & (m_s > 0)
+        outer_w = bend & (~corr_w) & wall_w & (m_w > 0)
+        outer_e = bend & (~corr_e) & wall_e & (m_e > 0)
+
+        sc_n = np.where(outer_n, 0.5 * np.minimum(1.0, m_n.astype(np.float32) / 20.0), 0.0)
+        sc_s = np.where(outer_s, 0.5 * np.minimum(1.0, m_s.astype(np.float32) / 20.0), 0.0)
+        sc_w = np.where(outer_w, 0.5 * np.minimum(1.0, m_w.astype(np.float32) / 20.0), 0.0)
+        sc_e = np.where(outer_e, 0.5 * np.minimum(1.0, m_e.astype(np.float32) / 20.0), 0.0)
+        score = np.maximum.reduce([score, sc_n, sc_s, sc_w, sc_e])
+
+        # 4) Long room wall with no visible doors on that wall and unknown behind:
+        #    0.6 + 0.05×(wall_run_length≥5), clipped to 0.9
+        #    (Doors break wall runs anyway, so "no doors" implied by the run.)
+        long_n = room & wall_n & (m_n > 0)
+        long_s = room & wall_s & (m_s > 0)
+        long_w = room & wall_w & (m_w > 0)
+        long_e = room & wall_e & (m_e > 0)
+
+        base_n = 0.6 + 0.05 * (r_n >= 5)
+        base_s = 0.6 + 0.05 * (r_s >= 5)
+        base_w = 0.6 + 0.05 * (r_w >= 5)
+        base_e = 0.6 + 0.05 * (r_e >= 5)
+
+        base_n = np.minimum(base_n, 0.9).astype(np.float32)
+        base_s = np.minimum(base_s, 0.9).astype(np.float32)
+        base_w = np.minimum(base_w, 0.9).astype(np.float32)
+        base_e = np.minimum(base_e, 0.9).astype(np.float32)
+
+        sc_n = np.where(long_n, base_n * np.minimum(1.0, m_n.astype(np.float32) / 20.0), 0.0)
+        sc_s = np.where(long_s, base_s * np.minimum(1.0, m_s.astype(np.float32) / 20.0), 0.0)
+        sc_w = np.where(long_w, base_w * np.minimum(1.0, m_w.astype(np.float32) / 20.0), 0.0)
+        sc_e = np.where(long_e, base_e * np.minimum(1.0, m_e.astype(np.float32) / 20.0), 0.0)
+        score = np.maximum.reduce([score, sc_n, sc_s, sc_w, sc_e])
+
+        # ---------- global gates ----------
+        score[~has_adj_wall] = 0.0
+        score[diag_only] = 0.0
+
+        return score.astype(np.float32)
+
+    def _calculate_dead_end_mask(self) -> np.ndarray:
+        props = self.properties
+        corridor = (props & GLYPH_TABLE.CORRIDOR) != 0
+        passable = (props & GLYPH_TABLE.PASSABLE) != 0
+
+        # neighbor shifts
+        def n(a):
+            o = np.zeros_like(a, bool)
+            o[1:, :]  = a[:-1, :]
+            return o
+        def s(a):
+            o = np.zeros_like(a, bool)
+            o[:-1, :] = a[1:,  :]
+            return o
+        def w(a):
+            o = np.zeros_like(a, bool)
+            o[:, 1:]  = a[:, :-1]
+            return o
+        def e(a):
+            o = np.zeros_like(a, bool)
+            o[:, :-1] = a[:,  1:]
+            return o
+
+        corr_n, corr_s, corr_w, corr_e = n(corridor), s(corridor), w(corridor), e(corridor)
+        pass_n, pass_s, pass_w, pass_e = n(passable), s(passable), w(passable), e(passable)
+
+        # corridor neighbor count (cardinals)
+        corr_nb = (
+            corr_n.astype(np.uint8) + corr_s.astype(np.uint8) +
+            corr_w.astype(np.uint8) + corr_e.astype(np.uint8)
+        )
+
+        # any passable neighbor that is NOT a corridor? (e.g., room floor)
+        noncorr_pass = (pass_n & ~corr_n) | (pass_s & ~corr_s) | (pass_w & ~corr_w) | (pass_e & ~corr_e)
+
+        # dead-end tip: corridor cell with ≤1 corridor neighbor, and no non-corridor passable neighbor
+        dead_end = corridor & (corr_nb <= 1) & ~noncorr_pass
+        return dead_end
+
+    def _calculate_unseen_mass_adjacent(self, depth=7, half_width=3):
+        # Precompute once per frame
+        unseen = (self.properties & self.UNSEEN_STONE) != 0
+        north, south, west, east = _unseen_mass_by_dir(unseen, depth, half_width)
+
+        barrier = (self.properties & (GLYPH_TABLE.WALL | GLYPH_TABLE.STONE)) != 0
+
+        # Pull the neighbor’s mass in each direction (align back onto the center cell)
+        mass_from_n = np.zeros(self.properties.shape, dtype=np.int32)
+        mass_from_s = np.zeros(self.properties.shape, dtype=np.int32)
+        mass_from_w = np.zeros(self.properties.shape, dtype=np.int32)
+        mass_from_e = np.zeros(self.properties.shape, dtype=np.int32)
+
+        # neighbor above/below/left/right must be a barrier
+        mass_from_n[1:,  :] = (north[:-1,  :] * barrier[:-1,  :])
+        mass_from_s[:-1, :] = (south[1:,   :] * barrier[1:,   :])
+        mass_from_w[:, 1:]  = (west[:,  :-1] * barrier[:,  :-1])
+        mass_from_e[:, :-1] = (east[:,  1:]  * barrier[:,   1:])
+
+        max_mass = np.maximum.reduce([mass_from_n, mass_from_s, mass_from_w, mass_from_e])
+        return max_mass
+
+
+    def _calculate_wall_run_lengths(self, walls : np.ndarray):
+        h, w = walls.shape
+
+        # --- horizontal runs (along x) ---
+        lab_h = np.cumsum(~walls, axis=1)                                # constant within True-runs
+        gid_h = lab_h + (np.arange(h, dtype=np.int64)[:, None] * (w+1)) # unique per row
+        cnt_h = np.bincount(gid_h[walls].ravel(), minlength=h*(w+1))
+        run_h = np.zeros_like(lab_h, dtype=np.int16)
+        run_h[walls] = cnt_h[gid_h[walls]].astype(np.int16, copy=False)
+
+        # --- vertical runs (along y) ---
+        lab_v = np.cumsum(~walls, axis=0)
+        gid_v = lab_v + (np.arange(w, dtype=np.int64)[None, :] * (h+1)) # unique per col
+        cnt_v = np.bincount(gid_v[walls].ravel(), minlength=w*(h+1))
+        run_v = np.zeros_like(lab_v, dtype=np.int16)
+        run_v[walls] = cnt_v[gid_v[walls]].astype(np.int16, copy=False)
+
+        return run_h, run_v
+
+    def _calculate_adj_max_wall_len(self):
+        walls = (self.properties & GLYPH_TABLE.WALL) != 0
+        run_h, run_v = self._calculate_wall_run_lengths(walls)
+
+        # For a passable tile at (y,x), the neighbor wall at:
+        #  - North uses run_h at (y-1,x)  (wall face is horizontal)
+        #  - South uses run_h at (y+1,x)
+        #  - West  uses run_v at (y,x-1)  (wall face is vertical)
+        #  - East  uses run_v at (y,x+1)
+
+        north = np.zeros(walls.shape, dtype=np.int16)
+        south = np.zeros(walls.shape, dtype=np.int16)
+        west  = np.zeros(walls.shape, dtype=np.int16)
+        east  = np.zeros(walls.shape, dtype=np.int16)
+
+        north[1:,  :] = (run_h[:-1,  :] * walls[:-1,  :])
+        south[:-1, :] = (run_h[1:,   :] * walls[1:,   :])
+        west[:, 1:]   = (run_v[:,  :-1] * walls[:,  :-1])
+        east[:, :-1]  = (run_v[:,   1:] * walls[:,   1:])
+
+        max_adjacent = np.maximum.reduce([north, south, west, east])
+        return max_adjacent
