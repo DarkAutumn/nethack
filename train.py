@@ -150,7 +150,7 @@ def main(
         log_dir: Directory for TensorBoard logs. Default "logs/".
     """
     out_path = Path(output_dir)
-    log_path = Path(log_dir)
+    log_path = Path(log_dir) / name
     out_path.mkdir(parents=True, exist_ok=True)
     log_path.mkdir(parents=True, exist_ok=True)
 
