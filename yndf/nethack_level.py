@@ -382,9 +382,9 @@ class DungeonLevel:
         """Calculate the wavefront targets for the current state."""
         passable = (self.properties & GLYPH_TABLE.PASSABLE) != 0
         visited = (self.properties & self.VISITED) != 0
-        non_monster_non_cmap = (self.properties & (GLYPH_TABLE.CMAP | GLYPH_TABLE.MONSTER)) == 0
+        objects = (self.properties & GLYPH_TABLE.OBJECT) != 0
 
-        interesting_objects = ~visited & non_monster_non_cmap & passable
+        interesting_objects = ~visited & objects & passable
 
         frontier = (self.properties & self.FRONTIER) != 0
         target_mask = interesting_objects | frontier
