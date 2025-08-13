@@ -1,7 +1,7 @@
 """A wrapper to expose NethackState object as info['state']."""
 
 import gymnasium as gym
-from yndf.movement import DIRECTION_MAP
+from yndf.wrapper_actions import DIRECTION_MAP
 from yndf.nethack_state import NethackState
 
 class NethackStateWrapper(gym.Wrapper):
@@ -33,13 +33,6 @@ class NethackStateWrapper(gym.Wrapper):
         if self._current_state.message == "This door is locked.":
             pos = self._get_target_position(action)
             self._current_state.add_locked_door(pos)
-
-        if self._current_state.message == "You can't move diagonally into an intact doorway.":
-            pos = self._get_target_position(action)
-            self._current_state.add_open_door(pos)
-
-        if self._current_state.message == "You can't move diagonally out of an intact doorway.":
-            self._current_state.add_open_door(self._current_state.player.position)
 
         if self._current_state.message == "You try to move the boulder, but in vain." or \
                "Perhaps that's why you cannot move it." in self._current_state.message:

@@ -6,6 +6,7 @@ import yndf.gui
 
 from train import ACTIONS
 from yndf.wrapper_actions import UserInputAction
+from yndf.wrapper_rewards import NethackRewardWrapper
 
 def get_action_masker(env: gym.Env) -> gym.Wrapper:
     """Get the action masker from the environment."""
@@ -17,6 +18,16 @@ def get_action_masker(env: gym.Env) -> gym.Wrapper:
             raise ValueError("Environment does not support action masks.")
     return action_masker
 
+def get_ending_handler(env: gym.Env):
+    """Get the ending handler from the environment."""
+    ending_handler = env
+    while not isinstance(ending_handler, NethackRewardWrapper):
+        if isinstance(ending_handler, gym.Wrapper):
+            ending_handler = ending_handler.env
+        else:
+            raise ValueError("Environment does not support endings.")
+    return ending_handler
+
 class Controller(yndf.gui.NethackController):
     """A controller for the YenderFlow GUI debugger."""
 
@@ -27,6 +38,11 @@ class Controller(yndf.gui.NethackController):
         self.obs = None
 
         self.action_masker = get_action_masker(env)
+        endings = get_ending_handler(env).endings
+        for x in endings:
+            if x.name == "no-discovery":
+                x.disable()
+
 
     def reset(self) -> yndf.NethackState:
         """Reset the controller to the initial state and return the first frame."""

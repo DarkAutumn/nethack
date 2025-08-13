@@ -4,7 +4,6 @@ import gymnasium as gym
 import nle
 
 from yndf.nethack_state import NethackState
-from yndf.wrapper_multistep import NethackMultistepActionWrapper
 from yndf.wrapper_obs import NethackObsWrapper
 from yndf.wrapper_rewards import NethackRewardWrapper
 from yndf.wrapper_actions import NethackActionWrapper
@@ -21,14 +20,15 @@ def create_env(**kwargs) -> gym.Env:
     has_search = nle.nethack.Command.SEARCH in actions
     save_replays = kwargs.get("save_replays", False)
 
+    # todo: about to rewrite this differently so don't capture this for now
+    save_replays = False
     env = NethackStateWrapper(env)
     env = NethackObsWrapper(env)
+    env = NethackRewardWrapper(env, has_search)
     action_wrapper = env = NethackActionWrapper(env, actions)
-    reward_wrapper = env = NethackRewardWrapper(env, has_search)
     if save_replays:
         env = NethackReplayWrapper(env, action_wrapper)
 
-    env = NethackMultistepActionWrapper(env, action_wrapper, reward_wrapper)
     return env
 
 gym.register(id="YenderFlow-v0", entry_point="yndf:create_env")

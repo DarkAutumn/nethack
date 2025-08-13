@@ -19,9 +19,10 @@ from dataclasses import dataclass
 from typing import Dict, Optional, List, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
+import numpy as np
 
+from yndf.nethack_level import GLYPH_TABLE, DungeonLevel
 from yndf.nethack_state import NethackState
-from yndf.movement import UNPASSABLE_WAVEFRONT, GlyphKind
 
 # pylint: disable=c-extension-no-member,invalid-name
 
@@ -86,6 +87,22 @@ class TerminalWidget(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self._last_hover_cell: Tuple[int, int] = (-1, -1)
 
+
+        values = {}
+        for x in dir(GLYPH_TABLE):
+            if x.upper() == x:
+                v = getattr(GLYPH_TABLE, x)
+                if isinstance(v, np.uint32):
+                    values[v] = x
+
+        for x in dir(DungeonLevel):
+            if x.upper() == x:
+                v = getattr(DungeonLevel, x)
+                if isinstance(v, np.uint32):
+                    values[v] = x
+
+        self._bit_mapping = values
+
     def set_frame(self, state : NethackState) -> None:
         """Set the terminal frame to display."""
         # enforce exact 24×80 shape
@@ -126,6 +143,16 @@ class TerminalWidget(QtWidgets.QWidget):
         self._last_hover_cell = (-1, -1)
         super().leaveEvent(event)
 
+    def _get_property_string(self, prop: int) -> str:
+        bits = []
+        for i in range(32):
+            val = 1 << i
+            if prop & val:
+                if val in self._bit_mapping:
+                    bits.append(self._bit_mapping[val])
+
+        return " ".join(bits)
+
     def getHoverText(self, x: int, y: int) -> str:
         """Get the text at the given coordinates, handling the 21x79 glyph map."""
         if not (0 <= x < self.cols and 0 <= y < self.rows):
@@ -147,32 +174,11 @@ class TerminalWidget(QtWidgets.QWidget):
 
         tooltip.append(self.state.get_screen_description((gy, gx)))
         tooltip.append(f"Pos: ({gy}, {gx})")
-        tooltip.append(f"Glyph: {str(self.state.glyphs[gy][gx])}, Char: {ch}, Color: {color}")
-        tooltip.append(f"Floor Glyph: {self.state.floor_glyphs[gy, gx]}")
-
-        kind_val = self.state.glyph_kinds[gy, gx]
-        kind_val = GlyphKind(kind_val) if kind_val in GlyphKind else kind_val
-        tooltip.append(f"Glyph Kind: {kind_val.name}")
-
-        wave_val = self.state.wavefront[gy, gx]
-        if wave_val == UNPASSABLE_WAVEFRONT:
-            tooltip.append("Wavefront: Unpassable")
-        else:
-            tooltip.append(f"Wavefront: {wave_val}")
-
-        search_scores = self.state.search_state.search_scores
-        if search_scores is not None and getattr(search_scores, "shape", None) is not None:
-            py, px = self.state.player.position
-            h, w = search_scores.shape[0], search_scores.shape[1]
-            top = py - (h // 2)
-            left = px - (w // 2)
-
-            # Is (gy, gx) within the search_scores window?
-            if top <= gy < top + h and left <= gx < left + w:
-                sy = gy - top
-                sx = gx - left
-                val = float(search_scores[sy, sx])
-                tooltip.append(f"Search score: {val:.2f}")
+        tooltip.append(f"Glyph: {str(self.state.floor.glyphs[gy][gx])}, Char: {ch}, Color: {color}")
+        tooltip.append(f"props: {self._get_property_string(self.state.floor.properties[gy, gx])}")
+        tooltip.append(f"Search Count: {self.state.floor.search_count[gy, gx]}")
+        tooltip.append(f"search score: {self.state.floor.search_score[gy, gx]:.2f}")
+        tooltip.append(f"Wavefront: {self.state.floor.wavefront[gy, gx]}")
 
         return "\n".join(tooltip)
 
