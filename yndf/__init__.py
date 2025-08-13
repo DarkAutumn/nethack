@@ -23,8 +23,8 @@ def create_env(**kwargs) -> gym.Env:
 
     env = NethackStateWrapper(env)
     env = NethackObsWrapper(env)
-    action_wrapper = env = NethackActionWrapper(env, actions)
     reward_wrapper = env = NethackRewardWrapper(env, has_search)
+    action_wrapper = env = NethackActionWrapper(env, actions)
     if save_replays:
         env = NethackReplayWrapper(env, action_wrapper)
 
