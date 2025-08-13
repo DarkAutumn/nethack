@@ -288,10 +288,10 @@ class DungeonLevel:
             self.properties |= (prev.properties & self.VISITED)
 
             # If any monster was on a tile, but now it has objects on it, mark as unvisited so we don't skip the item
-            vm = self.properties & self.VISITED | GLYPH_TABLE.MONSTER
-            visited_with_monster = (prev.properties & vm) == vm
-            objects  = (self.properties & GLYPH_TABLE.OBJECT) != 0
-            unvisit  = visited_with_monster & objects
+            prev_visited = (prev.properties & self.VISITED) != 0
+            prev_monster = (prev.properties & GLYPH_TABLE.MONSTER) != 0
+            objects_now  = (self.properties & GLYPH_TABLE.OBJECT) != 0
+            unvisit = prev_visited & prev_monster & objects_now
             self.properties[unvisit] &= ~self.VISITED
 
         for pos in locked:
