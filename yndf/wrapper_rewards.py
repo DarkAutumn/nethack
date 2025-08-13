@@ -2,7 +2,7 @@
 
 import gymnasium as gym
 from nle import nethack
-from endings import NoDiscovery, NoForwardPathWithoutSearching
+from yndf.endings import NoDiscovery, NoForwardPathWithoutSearching
 from yndf.nethack_state import NethackState
 
 class Reward:
