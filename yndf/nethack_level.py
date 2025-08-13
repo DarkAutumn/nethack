@@ -445,14 +445,12 @@ class DungeonLevel:
         floor    = (props & GLYPH_TABLE.FLOOR)    != 0
         wall     = (props & GLYPH_TABLE.WALL)     != 0
         stone    = (props & GLYPH_TABLE.STONE)    != 0
+        has_adj_wall = (props & self.WALLS_ADJACENT) != 0
         barrier  = wall | stone
 
         # neighbor masks
         wall_n, wall_s, wall_w, wall_e = _shift_n(wall), _shift_s(wall), _shift_w(wall), _shift_e(wall)
         corr_n, corr_s, corr_w, corr_e = _shift_n(corridor), _shift_s(corridor), _shift_w(corridor), _shift_e(corridor)
-
-        # "adjacent wall present" gate
-        has_adj_wall = wall_n | wall_s | wall_w | wall_e
 
         # diagonal-only access gate (optional but per your spec)
         card_pass = _shift_n(passable) | _shift_s(passable) | _shift_w(passable) | _shift_e(passable)
