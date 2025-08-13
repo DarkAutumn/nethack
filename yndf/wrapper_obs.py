@@ -5,7 +5,6 @@ import numpy as np
 
 from yndf.nethack_state import NethackState
 
-
 CARDINALS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 DIAGONALS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
 DIRECTIONS = CARDINALS + DIAGONALS
@@ -39,7 +38,7 @@ class NethackObsWrapper(gym.Wrapper):
         visited = (state.floor.properties & state.floor.VISITED) != 0
         return {
             "glyphs": glyphs,
-            "visited_mask": visited,
+            "visited_mask": visited.astype(np.uint8),
             "agent_yx": agent_yx,
             "wavefront": self._calculate_wavefront_hints(state),
         }
