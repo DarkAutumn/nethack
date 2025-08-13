@@ -1,5 +1,6 @@
 from enum import Enum
 from collections import deque
+from functools import cached_property
 from nle import nethack
 import numpy as np
 
@@ -269,6 +270,7 @@ class DungeonLevel:
     TARGET = _bit(GLYPH_TABLE.UNUSED_BIT + 3)
     LOCKED_DOOR = _bit(GLYPH_TABLE.UNUSED_BIT + 4)
     WALLS_ADJACENT = _bit(GLYPH_TABLE.UNUSED_BIT + 5)
+    DEAD_END = _bit(GLYPH_TABLE.UNUSED_BIT + 6)
 
     def __init__(self, glyphs: np.ndarray, unpassable, locked, prev : 'DungeonLevel' = None):
         self.glyphs = glyphs
@@ -313,17 +315,20 @@ class DungeonLevel:
         target_mask = self._get_target_mask()
         self.properties[target_mask] |= self.TARGET
 
+        dead_end_mask = self._calculate_dead_end_mask()
+        self.properties[dead_end_mask] |= self.DEAD_END
+
         self.search_count = prev.search_count if prev else np.zeros_like(self.glyphs, dtype=np.uint8)
         self.search_score = self._compute_search_score()
         self.wavefront = self._calculate_wavefront()
 
-    @property
+    @cached_property
     def num_enemies(self):
         """Count of visible enemies on the level."""
         enemies = (self.properties & (GLYPH_TABLE.MONSTER | GLYPH_TABLE.PET)) == GLYPH_TABLE.MONSTER
         return np.sum(enemies)
 
-    @property
+    @cached_property
     def stone_tile_count(self):
         """Count of stone tiles on the level."""
         stone = (self.properties & GLYPH_TABLE.STONE) != 0
@@ -440,6 +445,7 @@ class DungeonLevel:
         h, w = props.shape
 
         # masks
+        dead_end = (props & self.DEAD_END) != 0
         passable = (props & GLYPH_TABLE.PASSABLE) != 0
         corridor = (props & GLYPH_TABLE.CORRIDOR) != 0
         floor    = (props & GLYPH_TABLE.FLOOR)    != 0
@@ -486,7 +492,6 @@ class DungeonLevel:
 
         # 1) Corridor dead-end tip (you face the dead end): 1.0
         #    Count *corridor* neighbors (cardinals).
-        dead_end = self._calculate_dead_end_mask()
         base_dead = dead_end.astype(np.float32)
 
         # use the largest unseen mass behind any adjacent barrier face
