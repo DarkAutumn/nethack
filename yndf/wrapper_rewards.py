@@ -2,7 +2,9 @@
 
 import gymnasium as gym
 from nle import nethack
+import numpy as np
 from yndf.endings import NoDiscovery, NoForwardPathWithoutSearching
+from yndf.nethack_level import GLYPH_TABLE
 from yndf.nethack_state import NethackState
 
 class Reward:
@@ -13,6 +15,9 @@ class Reward:
         self.max_value = max_value
 
     def __mul__(self, other: float) -> 'Reward':
+        if other == 1:
+            return self
+
         new_value = self.value * other
         if self.max_value is not None:
             new_value = min(new_value, self.max_value)
@@ -61,8 +66,10 @@ class NethackRewardWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         action_is_search = action == self.unwrapped.actions.index(nethack.Command.SEARCH)
 
-        reward_list = [Rewards.STEP]
         state: NethackState = info["state"]
+        time_passed = state.time - self._prev.time
+
+        reward_list = [Rewards.STEP * time_passed]
 
         if not terminated and not truncated:
             self._check_state_changes(reward_list, self._prev, state)
@@ -94,6 +101,14 @@ class NethackRewardWrapper(gym.Wrapper):
                 reward_list.append(Rewards.REACHED_FRONTIER)
 
         if action_is_search:
+            prev_floor = self._prev.floor
+            possible = (prev_floor.properties & GLYPH_TABLE.STONE) != 0
+            possible |= (prev_floor.properties & GLYPH_TABLE.WALL) != 0
+
+            actual = (state.floor.properties & GLYPH_TABLE.STONE) != 0
+            actual |= (state.floor.properties & GLYPH_TABLE.WALL) != 0
+
+            revealed = np.sum(~actual & possible)
             if revealed > 0:
                 value = Rewards.SEARCH_SUCCESS.value + min(Rewards.REVEALED_TILE.value * revealed, 0.2)
                 reward_list.append(Reward(Rewards.SEARCH_SUCCESS.name, value))
@@ -131,9 +146,10 @@ class NethackRewardWrapper(gym.Wrapper):
             return True, False, self.unwrapped.nethack.how_done()
 
         for ending in self.endings:
-            ending.step(state)
-            if ending.terminated or ending.truncated:
-                return ending.terminated, ending.truncated, ending.name
+            if ending.enabled:
+                ending.step(state)
+                if ending.terminated or ending.truncated:
+                    return ending.terminated, ending.truncated, ending.name
 
         return False, False, None
 
