@@ -6,6 +6,7 @@ from nle import nethack
 
 from yndf.nethack_level import GLYPH_TABLE
 from yndf.nethack_state import NethackState
+from yndf.nethack_level import DungeonLevel
 
 DIRECTION_MAP = {
     nethack.CompassDirection.NW : (-1, -1),
@@ -140,7 +141,35 @@ class NethackActionWrapper(gym.Wrapper):
         if self.kick_index is not None:
             mask[self.kick_index] = len(self.get_valid_kick_actions(self._state)) > 0
 
+        if self.search_index is not None:
+            mask[self.search_index] = self._get_search_mask(self._state)
+
         return mask
+
+    def _get_search_mask(self, state: NethackState) -> bool:
+        """Check if the player can search."""
+        floor = state.floor
+        pos = state.player.position
+
+        if floor.wavefront[pos] <= 12:
+            return False
+
+        if floor.search_count[pos] >= 22:
+            return False
+
+        if floor.search_score[pos] < 0.2:
+            return False
+
+        if (floor.properties[pos] & DungeonLevel.WALLS_ADJACENT) == 0:
+            return False
+
+        if ((floor.properties & GLYPH_TABLE.DESCEND_LOCATION) != 0).any():
+            return False
+
+        if floor.num_enemies > 0:
+            return False
+
+        return True
 
     def translate_to_keycode(self, action: int) -> str:
         """Translate an action index to a keypress character."""
