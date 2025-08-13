@@ -32,6 +32,8 @@ class Rewards:
     REACHED_FRONTIER = Reward("reached-frontier", 0.05)
     SUCCESS = Reward("success", 1.0)  # mini-scenario completed
     SEARCH_SUCCESS = Reward("search-success", 0.01, max_value=0.05)
+    SEARCHED_GOOD_SPOT = Reward("searched-good-spot", 0.02)
+    WASTED_SEARCH = Reward("wasted-search", -0.05)
 
 
 class NethackRewardWrapper(gym.Wrapper):
@@ -83,18 +85,24 @@ class NethackRewardWrapper(gym.Wrapper):
         """Check if any new tiles were revealed."""
         revealed = self._prev.floor.stone_tile_count - state.floor.stone_tile_count
         if revealed > 0:
-            if action_is_search:
-                value = Rewards.SEARCH_SUCCESS.value + min(Rewards.REVEALED_TILE.value * revealed, 0.2)
-                reward_list.append(Reward(Rewards.SEARCH_SUCCESS.name, value))
-
-            else:
-                reward_list.append(Rewards.REVEALED_TILE * revealed)
+            reward_list.append(Rewards.REVEALED_TILE * revealed)
         else:
             # give a larger reward for grabbing items off of the floor, which is effectively what
             # this is checking
             prev_visited = (prev.floor.properties & prev.floor.VISITED) != 0
             if prev.floor.wavefront[state.player.position] == 0 and not prev_visited[state.player.position]:
                 reward_list.append(Rewards.REACHED_FRONTIER)
+
+        if action_is_search:
+            if revealed > 0:
+                value = Rewards.SEARCH_SUCCESS.value + min(Rewards.REVEALED_TILE.value * revealed, 0.2)
+                reward_list.append(Reward(Rewards.SEARCH_SUCCESS.name, value))
+
+            elif state.floor.search_score[state.player.position] > 0.6:
+                reward_list.append(Rewards.SEARCHED_GOOD_SPOT)
+
+            elif state.floor.search_score[state.player.position] < 0.3:
+                reward_list.append(Rewards.WASTED_SEARCH)
 
     def _check_state_changes(self, reward_list, prev : NethackState, state : NethackState):
         if prev.player.depth < state.player.depth:
