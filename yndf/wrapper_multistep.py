@@ -47,6 +47,7 @@ class NethackMultistepActionWrapper(gym.Wrapper):
             # we already searched once at the top of the method
             already_searched = floor.search_count[start_state.player.position]
             if already_searched < self.max_search:
+                self.rewards.no_discovery.disable()
                 times_to_search = self.max_search - already_searched
 
                 state = start_state
@@ -66,5 +67,8 @@ class NethackMultistepActionWrapper(gym.Wrapper):
                     floor.search_count[state.player.position] += 1
                     reward += reward2
                     self.rewards.merge_reward_info(info, info2)
+
+
+                self.rewards.no_discovery.enable()
 
         return obs, reward, terminated, truncated, info
