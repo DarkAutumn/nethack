@@ -9,7 +9,7 @@ class Ending:
 
     def __init__(self, name: str):
         self.name = name
-        self._enabled = True
+        self._enabled = 1
         self._terminated = False
         self._truncated = False
 
@@ -36,15 +36,15 @@ class Ending:
     @property
     def enabled(self) -> bool:
         """Check if this ending condition is enabled."""
-        return self._enabled
+        return self._enabled > 0
 
     def disable(self):
         """Disable this ending condition."""
-        self._enabled = False
+        self._enabled -= 1
 
     def enable(self):
         """Enable this ending condition."""
-        self._enabled = True
+        self._enabled += 1
 
 class NoForwardPathWithoutSearching(Ending):
     """An ending condition that checks for no forward path without searching."""
