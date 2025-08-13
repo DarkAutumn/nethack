@@ -151,7 +151,7 @@ class NethackActionWrapper(gym.Wrapper):
         floor = state.floor
         pos = state.player.position
 
-        if floor.wavefront[pos] <= 12:
+        if floor.wavefront[pos] <= 2:
             return False
 
         if floor.search_count[pos] >= 22:
