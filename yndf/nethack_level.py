@@ -87,7 +87,7 @@ class GlyphLookupTable:
     FLOOR_MASK = CMAP | WALL | FLOOR | CORRIDOR | OPEN_DOOR | CLOSED_DOOR | DESCEND_LOCATION | STONE | TRAP
 
     OVERLAY_MASK = MONSTER | NORMAL_MONSTER | PET | RIDDEN_MONSTER | DETECTED_MONSTER | INVISIBLE | BODY | OBJECT \
-                    | STATUE | SWALLOW | WARNING
+                    | STATUE | SWALLOW | WARNING | PLAYER
 
     def __init__(self):
         # pylint: disable=no-member,too-many-branches
@@ -268,6 +268,7 @@ class DungeonLevel:
     FRONTIER = _bit(GLYPH_TABLE.UNUSED_BIT + 2)
     TARGET = _bit(GLYPH_TABLE.UNUSED_BIT + 3)
     LOCKED_DOOR = _bit(GLYPH_TABLE.UNUSED_BIT + 4)
+    WALLS_ADJACENT = _bit(GLYPH_TABLE.UNUSED_BIT + 5)
 
     def __init__(self, glyphs: np.ndarray, unpassable, locked, prev : 'DungeonLevel' = None):
         self.glyphs = glyphs
@@ -287,16 +288,21 @@ class DungeonLevel:
             self.properties |= (prev.properties & self.VISITED)
 
             # If any monster was on a tile, but now it has objects on it, mark as unvisited so we don't skip the item
-            visited_with_monster = (prev.properties & self.VISITED | GLYPH_TABLE.MONSTER) != 0
+            vm = self.properties & self.VISITED | GLYPH_TABLE.MONSTER
+            visited_with_monster = (prev.properties & vm) == vm
             objects  = (self.properties & GLYPH_TABLE.OBJECT) != 0
             unvisit  = visited_with_monster & objects
             self.properties[unvisit] &= ~self.VISITED
 
         for pos in locked:
-            self.properties[pos] |= self.LOCKED_DOOR
+            if self.properties[pos] & GLYPH_TABLE.CLOSED_DOOR:
+                self.properties[pos] |= self.LOCKED_DOOR
 
         for pos in unpassable:
             self.properties[pos] &= ~GLYPH_TABLE.PASSABLE
+
+        walls_adjacent = self._calculate_walls_adjacent_mask()
+        self.properties[walls_adjacent] |= self.WALLS_ADJACENT
 
         unseen_stone_mask = self._calculate_unseen_stone()
         self.properties[unseen_stone_mask] |= self.UNSEEN_STONE
@@ -322,6 +328,16 @@ class DungeonLevel:
         """Count of stone tiles on the level."""
         stone = (self.properties & GLYPH_TABLE.STONE) != 0
         return np.sum(stone)
+
+    def _calculate_walls_adjacent_mask(self) -> np.ndarray:
+        walls = (self.properties & (GLYPH_TABLE.WALL | GLYPH_TABLE.STONE)) != 0
+        adj = np.zeros_like(walls, dtype=bool)
+        # cardinals only (no wraparound)
+        adj[1:,  :] |= walls[:-1,  :]  # north neighbor is wall
+        adj[:-1, :] |= walls[1:,   :]  # south
+        adj[:, 1:]  |= walls[:,  :-1]  # west
+        adj[:, :-1] |= walls[:,   1:]  # east
+        return adj
 
     def _calculate_unseen_stone(self):
         visited = (self.properties & self.VISITED) != 0
