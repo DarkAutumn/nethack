@@ -74,7 +74,8 @@ class NethackActionWrapper(gym.Wrapper):
 
     def step(self, action):  # type: ignore[override]
         is_user_input = isinstance(action, UserInputAction)
-        if action == self.search_index or (is_user_input and action.chr == 's'):
+        action_is_search = action == self.search_index or (is_user_input and action.chr == 's')
+        if action_is_search:
             self.unwrapped.nethack.step(ord('n'))
             self.unwrapped.nethack.step(ord('2'))
             self.unwrapped.nethack.step(ord('2'))
@@ -89,10 +90,19 @@ class NethackActionWrapper(gym.Wrapper):
         action = self._translate_action(action)
 
         obs, reward, terminated, truncated, info = self.env.step(action)
-        self._state: NethackState = info["state"]
+        state = info["state"]
+
+        if action_is_search:
+            self._add_search_count(self._state, state)
+
+        self._state: NethackState = state
 
         info["action_mask"] = self.action_masks()
         return obs, reward, terminated, truncated, info
+
+    def _add_search_count(self, prev: NethackState, state: NethackState):
+        time = state.time - prev.time
+        state.floor.search_count[prev.player.position] += time
 
     def _get_index_or_none(self, action, actions):
         if action in actions:
