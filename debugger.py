@@ -43,7 +43,6 @@ class Controller(yndf.gui.NethackController):
             if x.name == "no-discovery":
                 x.disable()
 
-
     def reset(self) -> yndf.NethackState:
         """Reset the controller to the initial state and return the first frame."""
         obs, info = self.env.reset()
@@ -106,7 +105,7 @@ def main():
     )
     args = parser.parse_args()
 
-    env = gym.make("YenderFlow-v0", actions=ACTIONS)
+    env = gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=True)
     yndf.gui.run_gui(Controller(env), model_path=args.model_path)
 
 if __name__ == "__main__":

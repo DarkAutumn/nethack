@@ -21,17 +21,12 @@ class StepRecord:
 
     Fields:
         action: integer action that was taken (keypress).
-        original_observation: dict from the NetHack env (raw).
-        model_observation: dict fed to your model (post-wrappers).
-        original_info: info dict from the NetHack env (raw).
-        model_info: info dict after your wrappers.
+        observation: observation from the NetHack env (raw).
+        info: info dict from the NetHack env (raw).
     """
     action: int
-    original_observation: Mapping[str, Any]
-    original_info: Mapping[str, Any]
-    observation: Mapping[str, Any]
-    info: Mapping[str, Any]
-
+    observation: dict[str, Any] | None
+    info: dict[str, Any] | None
 
 def _enum_name_or_value(val: Any) -> Any:
     """Convert Enum to its name, otherwise return value unchanged."""
@@ -55,12 +50,9 @@ def _sanitize_step_for_pickle(step: StepRecord) -> StepRecord:
     """
     return StepRecord(
         action=int(step.action) if step.action is not None else None,
-        original_observation=_sanitize_top_enums(step.original_observation) or {},
-        original_info=_sanitize_top_enums(step.original_info) or {},
         observation=_sanitize_top_enums(step.observation) or {},
         info=_sanitize_top_enums(step.info) or {},
     )
-
 
 # --------------------------
 # Safe, atomic replay writer
