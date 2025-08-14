@@ -159,6 +159,7 @@ class NethackState:
     def __init__(self, obs, info, how_died: Optional[str], prev: Optional['NethackState'] = None):
         self.original = OriginalObservationInfo(obs, info)
 
+        self.game_aborted = info['end_status'] == -1  # aborted
         self.game_over = info['end_status'] == 1  # death
         self.how_died = how_died
 

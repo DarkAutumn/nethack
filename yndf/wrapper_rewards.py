@@ -151,6 +151,9 @@ class NethackRewardWrapper(gym.Wrapper):
         if state.game_over:
             return True, False, state.how_died
 
+        if state.game_aborted:
+            return False, True, "aborted"
+
         for ending in self.endings:
             if ending.enabled:
                 ending.step(state)
