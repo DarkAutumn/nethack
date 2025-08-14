@@ -48,14 +48,13 @@ class NethackObsWrapper(gym.Wrapper):
 
         glyphs = obs["glyphs"].astype(np.int16)
         agent_yx = np.array(state.player.position, dtype=np.int16)
-        visited = (state.floor.properties & state.floor.VISITED) != 0
         search_scores = self._get_padded_7x7(state.floor.search_score, state.player.position, r = 3)
         mult = (self._get_padded_7x7(state.floor.search_count, state.player.position, r = 3) < 22).astype(np.float32)
         search_scores *= mult
 
         return {
             "glyphs": glyphs,
-            "visited_mask": visited.astype(np.uint8),
+            "visited_mask": state.floor.visited_mask.astype(np.uint8),
             "agent_yx": agent_yx,
             "wavefront": self._calculate_wavefront_hints(state),
             "vector_fields": self._get_vector_fields(state),

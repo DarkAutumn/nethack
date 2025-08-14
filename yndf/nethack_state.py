@@ -265,24 +265,16 @@ class NethackState:
             return False
 
         prev_floor = prev.floor
-        revealed = prev_floor.stone_tile_count - self.floor.stone_tile_count
+        revealed = (prev_floor.stone_mask & ~self.floor.stone_mask).sum()
         if revealed > 0:
             return False
 
-        possible = (prev_floor.properties & GLYPH_TABLE.STONE) != 0
-        possible |= (prev_floor.properties & GLYPH_TABLE.WALL) != 0
-
-        actual = (self.floor.properties & GLYPH_TABLE.STONE) != 0
-        actual |= (self.floor.properties & GLYPH_TABLE.WALL) != 0
-
-        hidden_revealed = (~actual & possible).sum()
+        hidden_revealed = (~self.floor.barrier_mask & prev_floor.barrier_mask).sum()
 
         if hidden_revealed > 0:
             return False
 
-        prev_visited = (prev_floor.properties & prev_floor.VISITED) != 0
-        visited = (self.floor.properties & self.floor.VISITED) != 0
-        if (visited & ~prev_visited).any():
+        if (self.floor.visited_mask & ~prev.floor.visited_mask).any():
             return False
 
         return True
