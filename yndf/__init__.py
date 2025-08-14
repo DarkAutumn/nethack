@@ -18,16 +18,14 @@ def create_env(**kwargs) -> gym.Env:
 
     actions = kwargs.get("actions", env.unwrapped.actions)
     has_search = nle.nethack.Command.SEARCH in actions
-    save_replays = kwargs.get("save_replays", False)
 
-    # todo: about to rewrite this differently so don't capture this for now
-    save_replays = False
+    if kwargs.get("save_replays", False):
+        env = NethackReplayWrapper(env)
+
     env = NethackStateWrapper(env)
     env = NethackObsWrapper(env)
     env = NethackRewardWrapper(env, has_search)
-    action_wrapper = env = NethackActionWrapper(env, actions)
-    if save_replays:
-        env = NethackReplayWrapper(env, action_wrapper)
+    env = NethackActionWrapper(env, actions)
 
     return env
 
