@@ -159,28 +159,39 @@ class NethackState:
     def __init__(self, obs, info, how_died: Optional[str], prev: Optional['NethackState'] = None):
         self.original = OriginalObservationInfo(obs, info)
 
-        self.player = NethackPlayer(obs)
-
-        self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
-        self.time = obs['blstats'][nethack.NLE_BL_TIME]
-
-        prev_is_usable = prev is not None and prev.player.depth == self.player.depth
-
-        self.stuck_boulders = prev.stuck_boulders.copy() if prev_is_usable else []
-        for boulder in self.stuck_boulders:
-            if self.glyphs[boulder.boulder_position] != StuckBoulder.BOULDER_GLYPH:
-                self.stuck_boulders.remove(boulder)
-
-        unpassable = [boulder.boulder_position
-                      for boulder in self.stuck_boulders
-                      if boulder.player_position == self.player.position] if self.stuck_boulders else []
-
-        self.locked_doors = prev.locked_doors.copy() if prev_is_usable else []
-        self.floor = DungeonLevel(self.glyphs, unpassable, self.locked_doors, prev.floor if prev_is_usable else None)
-
         self.game_over = info['end_status'] == 1  # death
         self.how_died = how_died
+
+        depth = obs['blstats'][nethack.NLE_BL_DEPTH]
+        prev_is_usable = prev is not None and (prev.player.depth == depth or self.game_over)
+        self.stuck_boulders = prev.stuck_boulders.copy() if prev_is_usable else []
+        self.locked_doors = prev.locked_doors.copy() if prev_is_usable else []
+
+        if prev is not None and self.game_over:
+            # when we hit a game over, we no longer get stats, use the previous obs but set the hp to 0
+            self.player = NethackPlayer(prev.original.observation)
+            self.player.hp = 0
+
+            self.time = prev.original.observation['blstats'][nethack.NLE_BL_TIME]
+            self.floor = prev.floor if prev_is_usable else None
+
+        else:
+            self.player = NethackPlayer(obs)
+            self.time = obs['blstats'][nethack.NLE_BL_TIME]
+
+            for boulder in self.stuck_boulders:
+                if self.glyphs[boulder.boulder_position] != StuckBoulder.BOULDER_GLYPH:
+                    self.stuck_boulders.remove(boulder)
+
+            unpassable = [boulder.boulder_position
+                        for boulder in self.stuck_boulders
+                        if boulder.player_position == self.player.position] if self.stuck_boulders else []
+
+            prev_floor = prev.floor if prev_is_usable else None
+            self.floor = DungeonLevel(self.glyphs, unpassable, self.locked_doors, prev_floor)
+
         self.made_progress = self._calculate_progress(prev)
+        self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
 
     @property
     def tty_chars(self):
@@ -230,6 +241,9 @@ class NethackState:
 
     def _calculate_progress(self, prev: Optional['NethackState']) -> bool:
         if prev is None:
+            return None
+
+        if self.game_over:
             return None
 
         if self.time == prev.time:
