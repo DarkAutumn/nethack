@@ -2,9 +2,7 @@
 
 import gymnasium as gym
 from nle import nethack
-import numpy as np
 from yndf.endings import  MaxTimestepsReached, NoForwardPathWithoutSearching
-from yndf.nethack_level import GLYPH_TABLE
 from yndf.nethack_state import NethackState
 
 class Reward:
@@ -96,25 +94,18 @@ class NethackRewardWrapper(gym.Wrapper):
 
     def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState, action_is_search: bool):
         """Check if any new tiles were revealed."""
-        revealed = self._prev.floor.stone_tile_count - state.floor.stone_tile_count
+        revealed = (self._prev.floor.stone_mask & ~state.floor.stone_mask).sum()
         if revealed > 0:
             reward_list.append(Rewards.REVEALED_TILE * revealed)
         else:
             # give a larger reward for grabbing items off of the floor, which is effectively what
             # this is checking
-            prev_visited = (prev.floor.properties & prev.floor.VISITED) != 0
+            prev_visited = prev.floor.visited_mask
             if prev.floor.wavefront[state.player.position] == 0 and not prev_visited[state.player.position]:
                 reward_list.append(Rewards.REACHED_FRONTIER)
 
         if action_is_search:
-            prev_floor = self._prev.floor
-            possible = (prev_floor.properties & GLYPH_TABLE.STONE) != 0
-            possible |= (prev_floor.properties & GLYPH_TABLE.WALL) != 0
-
-            actual = (state.floor.properties & GLYPH_TABLE.STONE) != 0
-            actual |= (state.floor.properties & GLYPH_TABLE.WALL) != 0
-
-            revealed = np.sum(~actual & possible)
+            revealed = (self._prev.floor.barrier_mask & ~state.floor.barrier_mask).sum()
             if revealed > 0:
                 value = Rewards.SEARCH_SUCCESS.value + min(Rewards.REVEALED_TILE.value * revealed, 0.2)
                 reward_list.append(Reward(Rewards.SEARCH_SUCCESS.name, value))

@@ -290,10 +290,9 @@ class DungeonLevel:
             self.properties |= (prev.properties & self.VISITED)
 
             # If any monster was on a tile, but now it has objects on it, mark as unvisited so we don't skip the item
-            prev_visited = (prev.properties & self.VISITED) != 0
             prev_monster = (prev.properties & GLYPH_TABLE.MONSTER) != 0
             objects_now  = (self.properties & GLYPH_TABLE.OBJECT) != 0
-            unvisit = prev_visited & prev_monster & objects_now
+            unvisit = prev.visited_mask & prev_monster & objects_now
             self.properties[unvisit] &= ~self.VISITED
 
         for pos in locked:
@@ -323,32 +322,44 @@ class DungeonLevel:
         self.wavefront = self._calculate_wavefront()
 
     @cached_property
+    def stone_mask(self):
+        """Mask for all stone tiles on the level."""
+        return (self.properties & GLYPH_TABLE.STONE) != 0
+
+    @cached_property
+    def wall_mask(self):
+        """Mask for all wall tiles on the level."""
+        return (self.properties & GLYPH_TABLE.WALL) != 0
+
+    @cached_property
+    def barrier_mask(self):
+        """Mask for all barrier tiles on the level."""
+        return self.wall_mask | self.stone_mask
+
+    @cached_property
+    def visited_mask(self):
+        """Mask for all visited tiles on the level."""
+        return (self.properties & self.VISITED) != 0
+
+    @cached_property
     def num_enemies(self):
         """Count of visible enemies on the level."""
         enemies = (self.properties & (GLYPH_TABLE.MONSTER | GLYPH_TABLE.PET)) == GLYPH_TABLE.MONSTER
         return np.sum(enemies)
 
-    @cached_property
-    def stone_tile_count(self):
-        """Count of stone tiles on the level."""
-        stone = (self.properties & GLYPH_TABLE.STONE) != 0
-        return np.sum(stone)
-
     def _calculate_walls_adjacent_mask(self) -> np.ndarray:
-        walls = (self.properties & (GLYPH_TABLE.WALL | GLYPH_TABLE.STONE)) != 0
-        adj = np.zeros_like(walls, dtype=bool)
+        barrier = self.barrier_mask
+        adj = np.zeros_like(barrier, dtype=bool)
         # cardinals only (no wraparound)
-        adj[1:,  :] |= walls[:-1,  :]  # north neighbor is wall
-        adj[:-1, :] |= walls[1:,   :]  # south
-        adj[:, 1:]  |= walls[:,  :-1]  # west
-        adj[:, :-1] |= walls[:,   1:]  # east
+        adj[1:,  :] |= barrier[:-1,  :]  # north neighbor is wall
+        adj[:-1, :] |= barrier[1:,   :]  # south
+        adj[:, 1:]  |= barrier[:,  :-1]  # west
+        adj[:, :-1] |= barrier[:,   1:]  # east
         return adj
 
     def _calculate_unseen_stone(self):
-        visited = (self.properties & self.VISITED) != 0
-        stone   = (self.properties & GLYPH_TABLE.STONE) != 0
-        visited_nbr    = self._any_neighbor(visited)
-        unseen_stone   = stone & ~visited_nbr
+        visited_nbr    = self._any_neighbor(self.visited_mask)
+        unseen_stone   = self.stone_mask & ~visited_nbr
         return unseen_stone
 
     def _any_neighbor(self, a: np.ndarray) -> np.ndarray:
@@ -370,21 +381,19 @@ class DungeonLevel:
     def _calculate_frontier_mask(self) -> np.ndarray:
         props = self.properties
         passbl  = (props & GLYPH_TABLE.PASSABLE) != 0
-        visited = (props & self.VISITED) != 0
         unseen_stone = (props & self.UNSEEN_STONE) != 0
 
         near_unseen    = self._any_neighbor(unseen_stone)
 
-        frontier_mask  = passbl & ~visited & near_unseen
+        frontier_mask  = passbl & ~self.visited_mask & near_unseen
         return frontier_mask
 
     def _get_target_mask(self):
         """Calculate the wavefront targets for the current state."""
         passable = (self.properties & GLYPH_TABLE.PASSABLE) != 0
-        visited = (self.properties & self.VISITED) != 0
         objects = (self.properties & GLYPH_TABLE.OBJECT) != 0
 
-        interesting_objects = ~visited & objects & passable
+        interesting_objects = ~self.visited_mask & objects & passable
 
         frontier = (self.properties & self.FRONTIER) != 0
         target_mask = interesting_objects | frontier
@@ -396,6 +405,7 @@ class DungeonLevel:
             exits = (self.properties & GLYPH_TABLE.DESCEND_LOCATION) != 0
             target_mask |= exits
 
+        target_mask &= ~self.stone_mask
         return target_mask
 
     def _calculate_wavefront(self) -> np.ndarray:
@@ -449,10 +459,9 @@ class DungeonLevel:
         passable = (props & GLYPH_TABLE.PASSABLE) != 0
         corridor = (props & GLYPH_TABLE.CORRIDOR) != 0
         floor    = (props & GLYPH_TABLE.FLOOR)    != 0
-        wall     = (props & GLYPH_TABLE.WALL)     != 0
-        stone    = (props & GLYPH_TABLE.STONE)    != 0
+        wall     = self.wall_mask
         has_adj_wall = (props & self.WALLS_ADJACENT) != 0
-        barrier  = wall | stone
+        barrier  = wall | self.stone_mask
 
         # neighbor masks
         wall_n, wall_s, wall_w, wall_e = _shift_n(wall), _shift_s(wall), _shift_w(wall), _shift_e(wall)
@@ -577,7 +586,7 @@ class DungeonLevel:
         unseen = (self.properties & self.UNSEEN_STONE) != 0
         north, south, west, east = _unseen_mass_by_dir(unseen, depth, half_width)
 
-        barrier = (self.properties & (GLYPH_TABLE.WALL | GLYPH_TABLE.STONE)) != 0
+        barrier = self.barrier_mask
 
         # Pull the neighbor’s mass in each direction (align back onto the center cell)
         mass_from_n = np.zeros(self.properties.shape, dtype=np.int32)
@@ -615,7 +624,7 @@ class DungeonLevel:
         return run_h, run_v
 
     def _calculate_adj_max_wall_len(self):
-        walls = (self.properties & GLYPH_TABLE.WALL) != 0
+        walls = self.wall_mask
         run_h, run_v = self._calculate_wall_run_lengths(walls)
 
         # For a passable tile at (y,x), the neighbor wall at:
