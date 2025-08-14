@@ -90,6 +90,7 @@ class InfoCountsLogger(BaseCallback):
                         self._averages.setdefault("metrics/depth", []).append(state.player.depth)
                         self._averages.setdefault("metrics/time", []).append(state.time)
                         self._averages.setdefault("metrics/score", []).append(state.player.score)
+                        self._averages.setdefault("metrics/level", []).append(state.player.level)
 
                         self._averages.setdefault(f"times/{ending}", []).append(state.time)
 
