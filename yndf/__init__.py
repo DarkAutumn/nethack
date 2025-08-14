@@ -14,7 +14,7 @@ from yndf.neural_network import NethackMaskablePolicy
 
 def create_env(**kwargs) -> gym.Env:
     """Create a Nethack environment with the necessary wrappers."""
-    env = gym.make("NetHackScore-v0", actions=nle.nethack.ACTIONS)
+    env = gym.make("NetHackScore-v0", actions=nle.nethack.ACTIONS, max_episode_steps=20_000)
 
     actions = kwargs.get("actions", env.unwrapped.actions)
     has_search = nle.nethack.Command.SEARCH in actions
