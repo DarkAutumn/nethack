@@ -179,6 +179,7 @@ class NethackState:
         self.floor = DungeonLevel(self.glyphs, unpassable, self.locked_doors, prev.floor if prev_is_usable else None)
 
         self.game_over = info['end_status'] == 1  # death
+        self.how_died = self.unwrapped.nethack.how_done().name.lower() if self.game_over else None
 
     @property
     def tty_chars(self):

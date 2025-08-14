@@ -20,9 +20,6 @@ class NethackStateWrapper(gym.Wrapper):
 
     def step(self, action):  # type: ignore[override]
         obs, reward, terminated, truncated, info = self.env.step(action)
-        if info['end_status'] == 1: # game_over
-            info['ending'] = self.unwrapped.nethack.how_done().name
-
         self._current_state = NethackState(obs, info, self._current_state)
         info['state'] = self._current_state
 
