@@ -265,6 +265,9 @@ class NethackState:
             return False
 
         prev_floor = prev.floor
+        if prev_floor.wavefront[prev.player.position] > self.floor.wavefront[self.player.position]:
+            return False
+
         revealed = (prev_floor.stone_mask & ~self.floor.stone_mask).sum()
         if revealed > 0:
             return False
