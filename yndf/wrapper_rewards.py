@@ -3,7 +3,7 @@
 import gymnasium as gym
 from nle import nethack
 import numpy as np
-from yndf.endings import MaxTimesteps, NoForwardPathWithoutSearching
+from yndf.endings import  MaxTimestepsReached, NoForwardPathWithoutSearching
 from yndf.nethack_level import GLYPH_TABLE
 from yndf.nethack_state import NethackState
 
@@ -53,8 +53,7 @@ class NethackRewardWrapper(gym.Wrapper):
         self._prev : NethackState = None
         self._has_search = has_search
 
-        self.no_discovery = MaxTimesteps()
-        self.endings = [self.no_discovery]
+        self.endings = [MaxTimestepsReached()]
         if not has_search:
             self.endings.append(NoForwardPathWithoutSearching())
 
