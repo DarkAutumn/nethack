@@ -82,7 +82,7 @@ class InfoCountsLogger(BaseCallback):
 
                 state : NethackState = info.get("state", None)
                 if state is not None:
-                    self._add_boolean("metrics/progress", state.made_progress)
+                    self._add_boolean("metrics/idle-moves", state.idle_action)
 
                 if (ending := info.get("ending", None)) is not None:
                     self._counters.setdefault("endings", []).append(ending)

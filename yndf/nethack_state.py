@@ -141,6 +141,8 @@ class OriginalObservationInfo:
 
     def __init__(self, obs, info):
         self.observation = obs.copy()
+        for k, v in self.observation.items():
+            self.observation[k] = v.copy()
         self.info = info.copy()
 class StuckBoulder:
     """A boulder that is stuck in a position."""
@@ -158,17 +160,19 @@ class NethackState:
 
     def __init__(self, obs, info, how_died: Optional[str], prev: Optional['NethackState'] = None):
         self.original = OriginalObservationInfo(obs, info)
+        obs = self.original.observation
+        info = self.original.info
 
         self.game_aborted = info['end_status'] == -1  # aborted
         self.game_over = info['end_status'] == 1  # death
         self.how_died = how_died
 
         depth = obs['blstats'][nethack.NLE_BL_DEPTH]
-        prev_is_usable = prev is not None and (prev.player.depth == depth or self.game_over)
+        prev_is_usable = prev is not None and (prev.player.depth == depth or info['end_status'] != 0)
         self.stuck_boulders = prev.stuck_boulders.copy() if prev_is_usable else []
         self.locked_doors = prev.locked_doors.copy() if prev_is_usable else []
 
-        if prev is not None and self.game_over:
+        if prev is not None and info['end_status'] != 0:
             # when we hit a game over, we no longer get stats, use the previous obs but set the hp to 0
             self.player = NethackPlayer(prev.original.observation)
             self.player.hp = 0
@@ -191,7 +195,7 @@ class NethackState:
             prev_floor = prev.floor if prev_is_usable else None
             self.floor = DungeonLevel(self.glyphs, unpassable, self.locked_doors, prev_floor)
 
-        self.made_progress = self._calculate_progress(prev)
+        self.idle_action = self._was_idle(prev)
         self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
 
     @property
@@ -240,7 +244,7 @@ class NethackState:
         result.update(self.player.as_dict())
         return result
 
-    def _calculate_progress(self, prev: Optional['NethackState']) -> bool:
+    def _was_idle(self, prev: Optional['NethackState']) -> bool:
         if prev is None:
             return None
 
@@ -251,18 +255,18 @@ class NethackState:
             return None
 
         if self.player.depth > prev.player.depth:
-            return True
+            return False
 
         if self.player.score > prev.player.score:
-            return True
+            return False
 
         if self.player.exp > prev.player.exp:
-            return True
+            return False
 
         prev_floor = prev.floor
         revealed = prev_floor.stone_tile_count - self.floor.stone_tile_count
         if revealed > 0:
-            return True
+            return False
 
         possible = (prev_floor.properties & GLYPH_TABLE.STONE) != 0
         possible |= (prev_floor.properties & GLYPH_TABLE.WALL) != 0
@@ -273,6 +277,6 @@ class NethackState:
         hidden_revealed = (~actual & possible).sum()
 
         if hidden_revealed > 0:
-            return True
+            return False
 
-        return False
+        return True
