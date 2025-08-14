@@ -156,7 +156,7 @@ class NethackState:
     """World state in Nethack."""
     # pylint: disable=no-member
 
-    def __init__(self, obs, info, prev: Optional['NethackState'] = None):
+    def __init__(self, obs, info, how_died: Optional[str], prev: Optional['NethackState'] = None):
         self.original = OriginalObservationInfo(obs, info)
 
         self.player = NethackPlayer(obs)
@@ -179,7 +179,7 @@ class NethackState:
         self.floor = DungeonLevel(self.glyphs, unpassable, self.locked_doors, prev.floor if prev_is_usable else None)
 
         self.game_over = info['end_status'] == 1  # death
-        self.how_died = self.unwrapped.nethack.how_done().name.lower() if self.game_over else None
+        self.how_died = how_died
 
     @property
     def tty_chars(self):
