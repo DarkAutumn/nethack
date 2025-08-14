@@ -73,16 +73,18 @@ class NethackActionWrapper(gym.Wrapper):
         return obs, info
 
     def step(self, action):  # type: ignore[override]
-        if action == self.search_index or (isinstance(action, UserInputAction) and action.chr == 's'):
+        is_user_input = isinstance(action, UserInputAction)
+        if action == self.search_index or (is_user_input and action.chr == 's'):
             self.unwrapped.nethack.step(ord('n'))
             self.unwrapped.nethack.step(ord('2'))
             self.unwrapped.nethack.step(ord('2'))
 
-        elif action == self.kick_index or (isinstance(action, UserInputAction) and action.chr == 'k'):
-            actions = self.get_valid_kick_actions(self._state)
-            act = self.model_actions[action].value
-            self.unwrapped.nethack.step(act)
-            action = actions[0]
+        elif action == self.kick_index or (is_user_input and action.action == 4):
+            if not is_user_input:
+                actions = self.get_valid_kick_actions(self._state)
+                act = self.model_actions[self.kick_index].value
+                self.unwrapped.nethack.step(act)
+                action = actions[0]
 
         action = self._translate_action(action)
 
