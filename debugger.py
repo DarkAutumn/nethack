@@ -40,7 +40,7 @@ class Controller(yndf.gui.NethackController):
         self.action_masker = get_action_masker(env)
         endings = get_ending_handler(env).endings
         for x in endings:
-            if x.name == "no-discovery":
+            if x.name == "max-timesteps-reached":
                 x.disable()
 
     def reset(self) -> yndf.NethackState:
