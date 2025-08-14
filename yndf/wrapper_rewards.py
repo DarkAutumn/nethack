@@ -71,7 +71,7 @@ class NethackRewardWrapper(gym.Wrapper):
         action_is_search = action == self.unwrapped.actions.index(nethack.Command.SEARCH)
 
         state: NethackState = info["state"]
-        time_passed = state.time - self._prev.time
+        time_passed = max(state.time - self._prev.time, 1)
 
         reward_list = [Rewards.STEP * time_passed]
 
