@@ -35,14 +35,14 @@ class EpisodeResult:
     ending : str = None  # Ending type, e.g. "success", "death", etc.
 
 def evaluate_model(model_path: Path, episodes : int, deterministic: bool,
-                   save_replays: bool, quiet: bool) -> List[EpisodeResult]:
+                   replay_dir: str, quiet: bool) -> List[EpisodeResult]:
     """Run full episodes in parallel until `episodes` have completed.
 
     Args:
         model_path: Path to saved .zip model.
         episodes: Total number of completed episodes to gather.
         deterministic: Use deterministic actions.
-        save_replays: Pass through to envs.
+        replay_dir: Pass through to envs.
         quiet: Suppress output except for final results.
 
     Returns:
@@ -54,7 +54,7 @@ def evaluate_model(model_path: Path, episodes : int, deterministic: bool,
         raise FileNotFoundError(f"Model not found: {model_path}")
 
     results = []
-    env = gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=save_replays)
+    env = gym.make("YenderFlow-v0", actions=ACTIONS, replay_dir=replay_dir)
     model = MaskablePPO.load(model_path, env=env)
     action_masker = get_action_masker(env)
 
@@ -107,9 +107,10 @@ def main() -> None:
         help="Use stochastic actions (default is deterministic).",
     )
     parser.add_argument(
-        "--save-replays",
-        action="store_true",
-        help="Pass save_replays=True to evaluation envs.",
+        "--replay-dir",
+        type=str,
+        default="replays/",
+        help="Directory to save replay files (default: 'replays/').",
     )
     parser.add_argument(
         "--quiet",
@@ -124,7 +125,7 @@ def main() -> None:
         model_path=args.model,
         episodes=args.episodes,
         deterministic=not args.stochastic,
-        save_replays=args.save_replays,
+        replay_dir=args.replay_dir,
         quiet=args.quiet
     )
 
