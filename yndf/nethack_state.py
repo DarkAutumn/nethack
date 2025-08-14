@@ -141,6 +141,8 @@ class OriginalObservationInfo:
 
     def __init__(self, obs, info):
         self.observation = obs.copy()
+        for k, v in self.observation.items():
+            self.observation[k] = v.copy()
         self.info = info.copy()
 class StuckBoulder:
     """A boulder that is stuck in a position."""
@@ -156,29 +158,45 @@ class NethackState:
     """World state in Nethack."""
     # pylint: disable=no-member
 
-    def __init__(self, obs, info, prev: Optional['NethackState'] = None):
+    def __init__(self, obs, info, how_died: Optional[str], prev: Optional['NethackState'] = None):
         self.original = OriginalObservationInfo(obs, info)
+        obs = self.original.observation
+        info = self.original.info
 
-        self.player = NethackPlayer(obs)
-
-        self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
-        self.time = obs['blstats'][nethack.NLE_BL_TIME]
-
-        prev_is_usable = prev is not None and prev.player.depth == self.player.depth
-
-        self.stuck_boulders = prev.stuck_boulders.copy() if prev_is_usable else []
-        for boulder in self.stuck_boulders:
-            if self.glyphs[boulder.boulder_position] != StuckBoulder.BOULDER_GLYPH:
-                self.stuck_boulders.remove(boulder)
-
-        unpassable = [boulder.boulder_position
-                      for boulder in self.stuck_boulders
-                      if boulder.player_position == self.player.position] if self.stuck_boulders else []
-
-        self.locked_doors = prev.locked_doors.copy() if prev_is_usable else []
-        self.floor = DungeonLevel(self.glyphs, unpassable, self.locked_doors, prev.floor if prev_is_usable else None)
-
+        self.game_aborted = info['end_status'] == -1  # aborted
         self.game_over = info['end_status'] == 1  # death
+        self.how_died = how_died
+
+        depth = obs['blstats'][nethack.NLE_BL_DEPTH]
+        prev_is_usable = prev is not None and (prev.player.depth == depth or info['end_status'] != 0)
+        self.stuck_boulders = prev.stuck_boulders.copy() if prev_is_usable else []
+        self.locked_doors = prev.locked_doors.copy() if prev_is_usable else []
+
+        if prev is not None and info['end_status'] != 0:
+            # when we hit a game over, we no longer get stats, use the previous obs but set the hp to 0
+            self.player = NethackPlayer(prev.original.observation)
+            self.player.hp = 0
+
+            self.time = prev.original.observation['blstats'][nethack.NLE_BL_TIME]
+            self.floor = prev.floor if prev_is_usable else None
+
+        else:
+            self.player = NethackPlayer(obs)
+            self.time = obs['blstats'][nethack.NLE_BL_TIME]
+
+            for boulder in self.stuck_boulders:
+                if self.glyphs[boulder.boulder_position] != StuckBoulder.BOULDER_GLYPH:
+                    self.stuck_boulders.remove(boulder)
+
+            unpassable = [boulder.boulder_position
+                        for boulder in self.stuck_boulders
+                        if boulder.player_position == self.player.position] if self.stuck_boulders else []
+
+            prev_floor = prev.floor if prev_is_usable else None
+            self.floor = DungeonLevel(self.glyphs, unpassable, self.locked_doors, prev_floor)
+
+        self.idle_action = self._was_idle(prev)
+        self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
 
     @property
     def tty_chars(self):
@@ -225,3 +243,40 @@ class NethackState:
         }
         result.update(self.player.as_dict())
         return result
+
+    def _was_idle(self, prev: Optional['NethackState']) -> bool:
+        if prev is None:
+            return None
+
+        if self.game_over:
+            return None
+
+        if self.time == prev.time:
+            return None
+
+        if self.player.depth > prev.player.depth:
+            return False
+
+        if self.player.score > prev.player.score:
+            return False
+
+        if self.player.exp > prev.player.exp:
+            return False
+
+        prev_floor = prev.floor
+        revealed = prev_floor.stone_tile_count - self.floor.stone_tile_count
+        if revealed > 0:
+            return False
+
+        possible = (prev_floor.properties & GLYPH_TABLE.STONE) != 0
+        possible |= (prev_floor.properties & GLYPH_TABLE.WALL) != 0
+
+        actual = (self.floor.properties & GLYPH_TABLE.STONE) != 0
+        actual |= (self.floor.properties & GLYPH_TABLE.WALL) != 0
+
+        hidden_revealed = (~actual & possible).sum()
+
+        if hidden_revealed > 0:
+            return False
+
+        return True

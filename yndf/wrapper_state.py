@@ -14,16 +14,15 @@ class NethackStateWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
-        self._current_state = NethackState(obs, info)
+        self._current_state = NethackState(obs, info, None)
         info['state'] = self._current_state
         return obs, info
 
     def step(self, action):  # type: ignore[override]
         obs, reward, terminated, truncated, info = self.env.step(action)
-        if info['end_status'] == 1: # game_over
-            info['ending'] = self.unwrapped.nethack.how_done().name
 
-        self._current_state = NethackState(obs, info, self._current_state)
+        how_died = self.unwrapped.nethack.how_done().name.lower() if info['end_status'] == 1 else None
+        self._current_state = NethackState(obs, info, how_died, self._current_state)
         info['state'] = self._current_state
 
         if self._current_state.message == "This door is locked.":
