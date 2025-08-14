@@ -75,6 +75,9 @@ class NethackRewardWrapper(gym.Wrapper):
 
         self._check_state_changes(reward_list, self._prev, state)
         self._check_revealed_tiles(reward_list, self._prev, state, action_is_search)
+
+        self._check_wavefront_progress(state, reward_list)
+
         terminated, truncated, reason = self._check_endings(state)
         if terminated or truncated:
             assert reason is not None, "Ending condition should have a reason."
@@ -91,6 +94,27 @@ class NethackRewardWrapper(gym.Wrapper):
 
         self._prev = state
         return obs, reward, terminated, truncated, info
+
+    def _check_wavefront_progress(self, state, reward_list):
+        gamma = 0.99
+        wf_bonus = self._wavefront_shaping(self._prev, state, gamma=gamma, cap=12, coeff=0.03)
+        if wf_bonus != 0.0:
+            reward_list.append(Reward("wavefront-progress", wf_bonus))
+
+    def _wavefront_phi(self, floor, pos, cap=12) -> float:
+        d = int(floor.wavefront[pos])
+        if d < 0 or d > cap:
+            return 0.0
+        return 1.0 - (d / cap)
+
+    def _wavefront_shaping(self, prev: NethackState, curr: NethackState,
+                        gamma: float = 0.99, cap: int = 12, coeff: float = 0.03,
+                        only_if_moved: bool = True) -> float:
+        if only_if_moved and prev.player.position == curr.player.position:
+            return 0.0
+        phi_prev = self._wavefront_phi(prev.floor, prev.player.position, cap)
+        phi_curr = self._wavefront_phi(curr.floor, curr.player.position, cap)
+        return coeff * (gamma * phi_curr - phi_prev)
 
     def _check_revealed_tiles(self, reward_list, prev : NethackState, state : NethackState, action_is_search: bool):
         """Check if any new tiles were revealed."""
