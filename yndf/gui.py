@@ -457,8 +457,8 @@ class NetHackWindow(QtWidgets.QMainWindow):
             return f"{v:.3f}"
         return str(v)
 
-    def _populate_model_dropdown(self) -> None:  # NEW
-        """Fill the model dropdown with .zip files from model_path."""
+    def _populate_model_dropdown(self) -> None:  # UPDATED
+        """Fill the model dropdown with .zip files from model_path, selecting most recently modified."""
         if not hasattr(self, "model_select"):
             return
         self.model_select.blockSignals(True)
@@ -466,18 +466,25 @@ class NetHackWindow(QtWidgets.QMainWindow):
 
         names: list[str] = []
         if self.model_path and self.model_path.exists():
-            names = sorted([p.name for p in self.model_path.glob("*.zip")])
+            # Sort by modification time (newest first)
+            zip_paths = sorted(
+                self.model_path.glob("*.zip"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            names = [p.name for p in zip_paths]
 
         self.model_select.addItems(names)
         self.model_select.setEnabled(bool(names))
         self.model_select.blockSignals(False)
 
         if names:
-            # Default to the longest filename
-            idx = max(range(len(names)), key=lambda i: len(names[i]))
+            # Default to the most recently modified file (index 0 after sorting)
+            idx = 0
             self.model_select.setCurrentIndex(idx)
             # Explicitly set model on initial selection
             self._on_model_selected(names[idx])
+
 
     def _on_model_selected(self, name: str) -> None:  # NEW
         """Handle model selection change from the dropdown."""
