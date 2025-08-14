@@ -3,7 +3,7 @@
 import gymnasium as gym
 from nle import nethack
 import numpy as np
-from yndf.endings import NoDiscovery, NoForwardPathWithoutSearching
+from yndf.endings import MaxTimesteps, NoForwardPathWithoutSearching
 from yndf.nethack_level import GLYPH_TABLE
 from yndf.nethack_state import NethackState
 
@@ -29,7 +29,8 @@ class Rewards:
     HURT = Reward("took-damage", -0.05)
     KILL = Reward("kill-enemy", 0.5)
     DESCENDED = Reward("descended", 1.0)
-    DEATH = Reward("death", -5.0)
+    DIED = Reward("died", -5.0)
+    STARVED = Reward("starved", 1.0)   # until we can eat, this is a reward for making it this long
     LEVEL_UP = Reward("level-up", 0.5)
     GOLD = Reward("gold", 0.05)
     SCORE = Reward("score", 0.01) # any increase in score not rewarded by something else
@@ -40,6 +41,10 @@ class Rewards:
     SEARCHED_GOOD_SPOT = Reward("searched-good-spot", 0.02)
     WASTED_SEARCH = Reward("wasted-search", -0.05)
 
+DEATH_PENALTIES = {
+    "died": Rewards.DIED,
+    "starved": Rewards.STARVED,
+}
 
 class NethackRewardWrapper(gym.Wrapper):
     """Convert NLE reward to a more useful form."""
@@ -48,7 +53,7 @@ class NethackRewardWrapper(gym.Wrapper):
         self._prev : NethackState = None
         self._has_search = has_search
 
-        self.no_discovery = NoDiscovery()
+        self.no_discovery = MaxTimesteps()
         self.endings = [self.no_discovery]
         if not has_search:
             self.endings.append(NoForwardPathWithoutSearching())
@@ -71,13 +76,15 @@ class NethackRewardWrapper(gym.Wrapper):
 
         reward_list = [Rewards.STEP * time_passed]
 
-        if not terminated and not truncated:
-            self._check_state_changes(reward_list, self._prev, state)
-            self._check_revealed_tiles(reward_list, self._prev, state, action_is_search)
-            terminated, truncated, reason = self._check_endings(state)
-            if terminated or truncated:
-                assert reason is not None, "Ending condition should have a reason."
-                info['ending'] = reason
+        self._check_state_changes(reward_list, self._prev, state)
+        self._check_revealed_tiles(reward_list, self._prev, state, action_is_search)
+        terminated, truncated, reason = self._check_endings(state)
+        if terminated or truncated:
+            assert reason is not None, "Ending condition should have a reason."
+            if (death_penalty := DEATH_PENALTIES.get(reason, None)) is not None:
+                reward_list.append(death_penalty)
+
+            info['ending'] = reason
 
         reward = 0.0
         details = info["rewards"] = {}
@@ -139,11 +146,11 @@ class NethackRewardWrapper(gym.Wrapper):
         if prev.player.score < state.player.score and not reward_list:
             reward_list.append(Rewards.SCORE)
 
-    def _check_endings(self, state):
+    def _check_endings(self, state : NethackState):
         """Check if any ending conditions have been met.  Returns (terminated, truncated, reason)."""
         # No way to continue after a game over, so it's not an Ending condition
         if state.game_over:
-            return True, False, self.unwrapped.nethack.how_done()
+            return True, False, state.how_died
 
         for ending in self.endings:
             if ending.enabled:
