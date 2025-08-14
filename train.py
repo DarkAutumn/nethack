@@ -7,7 +7,7 @@ import cProfile
 from collections import Counter
 from pathlib import Path
 import pstats
-from typing import Callable
+from typing import Callable, Optional
 
 import gymnasium as gym
 from nle import nethack
@@ -16,6 +16,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 import yndf
+from yndf.nethack_state import NethackState
 from yndf.wrapper_profiler import ProfilingWrapper
 
 # ----------------------------- Actions ------------------------------------- #
@@ -63,6 +64,7 @@ class InfoCountsLogger(BaseCallback):
         self._emitted = set()
         self._counters = {}
         self._values = {}
+        self._booleans = {}
         self._averages = {}
 
     def _on_step(self) -> bool:
@@ -78,11 +80,18 @@ class InfoCountsLogger(BaseCallback):
                 if not info:
                     continue
 
+                state : NethackState = info.get("state", None)
+                if state is not None:
+                    self._add_boolean("metrics/progress", state.made_progress)
+
                 if (ending := info.get("ending", None)) is not None:
                     self._counters.setdefault("endings", []).append(ending)
-                    state = info.get("state", None)
                     if state is not None:
-                        self._averages.setdefault("counts/depth", []).append(state.player.depth)
+                        self._averages.setdefault("metrics/depth", []).append(state.player.depth)
+                        self._averages.setdefault("metrics/time", []).append(state.time)
+                        self._averages.setdefault("metrics/score", []).append(state.player.score)
+
+                        self._averages.setdefault(f"times/{ending}", []).append(state.time)
 
                 if (rewards := info.get("rewards", None)) is not None:
                     for name, value in rewards.items():
@@ -90,6 +99,11 @@ class InfoCountsLogger(BaseCallback):
                         self._values[key] = self._values.get(key, 0.0) + value
 
         return True
+
+    def _add_boolean(self, key: str, value: Optional[bool]) -> None:
+        if value is not None:
+            v = self._booleans.get(key, (0, 0))
+            self._booleans[key] = (v[0] + (1 if value else 0), v[1] + 1)
 
     def _on_rollout_end(self) -> bool:
         if self.model.num_timesteps - self._last_log_step < self.log_every:
@@ -118,6 +132,11 @@ class InfoCountsLogger(BaseCallback):
             curr_emitted.add(key)
             self._emitted.add(key)
 
+        for key, value in self._booleans.items():
+            self.logger.record(key, value[0] / value[1] if value[1] > 0 else 0)
+            curr_emitted.add(key)
+            self._emitted.add(key)
+
         missing = self._emitted - curr_emitted
         for key in missing:
             self.logger.record(key, 0)
@@ -128,6 +147,9 @@ class InfoCountsLogger(BaseCallback):
 
         for k in self._values:
             self._values[k] = 0.0
+
+        for k in self._booleans:
+            self._booleans[k] = (0, 0)
 
         return True
 

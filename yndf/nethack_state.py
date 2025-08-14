@@ -180,6 +180,7 @@ class NethackState:
 
         self.game_over = info['end_status'] == 1  # death
         self.how_died = how_died
+        self.made_progress = self._calculate_progress(prev)
 
     @property
     def tty_chars(self):
@@ -226,3 +227,37 @@ class NethackState:
         }
         result.update(self.player.as_dict())
         return result
+
+    def _calculate_progress(self, prev: Optional['NethackState']) -> bool:
+        if prev is None:
+            return None
+
+        if self.time == prev.time:
+            return None
+
+        if self.player.depth > prev.player.depth:
+            return True
+
+        if self.player.score > prev.player.score:
+            return True
+
+        if self.player.exp > prev.player.exp:
+            return True
+
+        prev_floor = prev.floor
+        revealed = prev_floor.stone_tile_count - self.floor.stone_tile_count
+        if revealed > 0:
+            return True
+
+        possible = (prev_floor.properties & GLYPH_TABLE.STONE) != 0
+        possible |= (prev_floor.properties & GLYPH_TABLE.WALL) != 0
+
+        actual = (self.floor.properties & GLYPH_TABLE.STONE) != 0
+        actual |= (self.floor.properties & GLYPH_TABLE.WALL) != 0
+
+        hidden_revealed = (~actual & possible).sum()
+
+        if hidden_revealed > 0:
+            return True
+
+        return False
