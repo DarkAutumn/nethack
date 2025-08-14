@@ -105,7 +105,7 @@ def main():
     )
     args = parser.parse_args()
 
-    env = gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=True)
+    env = gym.make("YenderFlow-v0", actions=ACTIONS, replay_dir="replays/")
     yndf.gui.run_gui(Controller(env), model_path=args.model_path)
 
 if __name__ == "__main__":

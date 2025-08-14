@@ -159,7 +159,7 @@ def main(
     output_dir: str = "models/",
     log_dir: str = "logs/",
     name: str = "nethack",
-    save_replays: bool = True,
+    replay_dir: Optional[str] = "replays/",
     profile: bool = False,
 ) -> None:
     """Train an agent to play NetHack.
@@ -181,7 +181,7 @@ def main(
     def _make_env(_: int) -> Callable[[], gym.Env]:
         """Factory for creating a single environment instance."""
         def _init() -> gym.Env:
-            return gym.make("YenderFlow-v0", actions=ACTIONS, save_replays=save_replays)
+            return gym.make("YenderFlow-v0", actions=ACTIONS, replay_dir=replay_dir)
         return _init
 
     profiler = None
@@ -264,10 +264,10 @@ if __name__ == "__main__":
         help='Directory for TensorBoard logs (default: "logs/").',
     )
     parser.add_argument(
-        "--save-replays",
-        type=bool,
-        help="Save replays of the training episodes.",
-        default=True,
+        "--replay-dir",
+        type=str,
+        default="replays/",
+        help='Directory to save replay files (default: "replays/").',
     )
     parser.add_argument(
         "--name",
@@ -292,6 +292,6 @@ if __name__ == "__main__":
         output_dir=args.output,
         name=args.name,
         log_dir=args.log_dir,
-        save_replays=args.save_replays,
+        replay_dir=args.replay_dir,
         profile=args.profile
     )

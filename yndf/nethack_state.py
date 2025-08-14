@@ -144,6 +144,7 @@ class OriginalObservationInfo:
         for k, v in self.observation.items():
             self.observation[k] = v.copy()
         self.info = info.copy()
+
 class StuckBoulder:
     """A boulder that is stuck in a position."""
     BOULDER_GLYPH = 2353
@@ -277,6 +278,11 @@ class NethackState:
         hidden_revealed = (~actual & possible).sum()
 
         if hidden_revealed > 0:
+            return False
+
+        prev_visited = (prev_floor.properties & prev_floor.VISITED) != 0
+        visited = (self.floor.properties & self.floor.VISITED) != 0
+        if (visited & ~prev_visited).any():
             return False
 
         return True
