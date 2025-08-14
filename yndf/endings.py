@@ -58,41 +58,17 @@ class NoForwardPathWithoutSearching(Ending):
         exits_or_frontiers = (state.level.properties & (GLYPH_TABLE.DESCEND_LOCATION | DungeonLevel.FRONTIER)) != 0
         self._terminated = not exits_or_frontiers.any()
 
-class NoDiscovery(Ending):
-    """An ending condition that checks for no discovery."""
-    def __init__(self, max_steps: int = 100):
-        super().__init__("no-discovery")
+class MaxTimestepsReached(Ending):
+    """An ending condition that checks for max timesteps reached."""
+    def __init__(self, max_steps: int = 15_000):
+        super().__init__("max-timesteps-reached")
 
         assert max_steps > 1
         self.max_steps = max_steps
-        self._steps_since_new = 0
-        self._prev : NethackState = None
-
-    def reset(self, state : NethackState) -> None:
-        """Reset for a new episode."""
-        super().reset(state)
-
-        self._steps_since_new = 0
-        self._prev = state
 
     def step(self, state : NethackState) -> None:
         """Check if there has been no discovery."""
         super().step(state)
 
-        if self._prev.player.depth < state.player.depth:
-            self._steps_since_new = 0
-
-        elif self._prev.player.exp < state.player.exp:
-            self._steps_since_new = 0
-
-        elif self._prev.player.gold < state.player.gold:
-            self._steps_since_new = 0
-
-        elif self._prev.floor.stone_tile_count > state.floor.stone_tile_count:
-            self._steps_since_new = 0
-
-        else:
-            self._steps_since_new += 1
-
-        self._truncated = self._steps_since_new > self.max_steps
-        self._prev = state
+        if state.time > self.max_steps:
+            self._truncated = True
