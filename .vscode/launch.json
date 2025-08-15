@@ -15,7 +15,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "ppo_train.py",
-            "args": [],
+            "args": ["--num-envs", "1"],
             "console": "integratedTerminal",
             "justMyCode": false
         },
