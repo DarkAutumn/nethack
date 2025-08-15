@@ -85,7 +85,7 @@ class GlyphLookupTable:
 
     UNUSED_BIT = 23
 
-    FLOOR_MASK = CMAP | WALL | FLOOR | CORRIDOR | OPEN_DOOR | CLOSED_DOOR | DESCEND_LOCATION | STONE | TRAP
+    FLOOR_MASK = CMAP | WALL | FLOOR | CORRIDOR | OPEN_DOOR | CLOSED_DOOR | DESCEND_LOCATION | TRAP
 
     OVERLAY_MASK = MONSTER | NORMAL_MONSTER | PET | RIDDEN_MONSTER | DETECTED_MONSTER | INVISIBLE | BODY | OBJECT \
                     | STATUE | SWALLOW | WARNING | PLAYER
@@ -301,6 +301,11 @@ class DungeonLevel:
 
         for pos in unpassable:
             self.properties[pos] &= ~GLYPH_TABLE.PASSABLE
+
+        # some items are stuck in the wall or stone, but these are NOT passable
+        passable = (self.properties & GLYPH_TABLE.PASSABLE) != 0
+        barrier = self.barrier_mask
+        self.properties[passable & barrier] &= ~GLYPH_TABLE.PASSABLE
 
         walls_adjacent = self._calculate_walls_adjacent_mask()
         self.properties[walls_adjacent] |= self.WALLS_ADJACENT
