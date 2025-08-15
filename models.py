@@ -308,3 +308,49 @@ class NethackPolicy(nn.Module):
         logprob_sum = logprob_verb + logprob_dir
         value = self.value_head(trunk).squeeze(-1)
         return logprob_sum, value, entropy_verb, entropy_dir, requires_dir
+
+    @torch.inference_mode()
+    def get_action_probabilities(
+        self,
+        obs: Dict[str, torch.Tensor],
+        verb_mask: torch.Tensor,          # (B, A) bool
+        dir_mask_per_verb: torch.Tensor,  # (B, A, 9) bool
+        temperature: float = 1.0,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+          per_verb_probs:          (B, A)      softmax over *unmasked* verbs (masked -> prob 0)
+          per_verb_dir_probs:      (B, A, 9)   for each verb, softmax over *unmasked* directions;
+                                              rows with no dir required -> all zeros
+          requires_dir_per_verb:   (B, A) bool convenience mask (any dir available?)
+        """
+        assert temperature > 0, "temperature must be > 0"
+        trunk = self.encode_trunk(obs)  # (B, hidden)
+        B, A = trunk.shape[0], self.num_verbs
+
+        # ---- Verb probs (masked softmax) ----
+        verb_logits = self.verb_head(trunk) / temperature  # (B, A)
+        verb_logits = _masked_logits(verb_logits, verb_mask)  # invalid -> large negative
+        per_verb_probs = F.softmax(verb_logits, dim=-1) * verb_mask.float()  # zero out masked exactly
+
+        # ---- Direction probs for every verb (vectorized) ----
+        # Build (B, A, hidden+emb) then run dir_head on (B*A, ...)
+        all_verbs = torch.arange(A, device=trunk.device)
+        verb_emb_table = self.verb_embedding(all_verbs)  # (A, E)
+
+        trunk_exp = trunk.unsqueeze(1).expand(-1, A, -1)            # (B, A, hidden)
+        verb_emb_exp = verb_emb_table.unsqueeze(0).expand(B, -1, -1)  # (B, A, E)
+        dir_in = torch.cat([trunk_exp, verb_emb_exp], dim=-1)       # (B, A, hidden+E)
+
+        dir_logits_all = self.dir_head(dir_in.reshape(B * A, -1))   # (B*A, 9)
+        dir_logits_all = (dir_logits_all / temperature).reshape(B, A, Directions)  # (B, A, 9)
+
+        # Mask per-verb directions and softmax along last dim
+        requires_dir_per_verb = dir_mask_per_verb.any(dim=-1)  # (B, A) bool
+        dir_logits_masked = _masked_logits(dir_logits_all, dir_mask_per_verb)  # (B, A, 9)
+        per_verb_dir_probs = F.softmax(dir_logits_masked, dim=-1)
+        # Zero out masked entries exactly, and zero out verbs that don't require a direction
+        per_verb_dir_probs = per_verb_dir_probs * dir_mask_per_verb.float()
+        per_verb_dir_probs = per_verb_dir_probs * requires_dir_per_verb.unsqueeze(-1).float()
+
+        return per_verb_probs, per_verb_dir_probs, requires_dir_per_verb
