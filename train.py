@@ -6,6 +6,7 @@ import argparse
 import cProfile
 from collections import Counter
 from pathlib import Path
+import re
 import pstats
 from typing import Callable, Optional
 
@@ -14,6 +15,7 @@ from nle import nethack
 from sb3_contrib.ppo_mask import MaskablePPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+from stable_baselines3.common.logger import configure
 
 import yndf
 from yndf.nethack_state import NethackState
@@ -28,6 +30,11 @@ ACTIONS = MOVE_ACTIONS + DESCEND_ACTION + OTHER_ACTIONS
 # Target total rollout size per update across all envs.
 ROLLOUT_TARGET = 4096
 DEFAULT_BATCH_SIZE = 1024
+_STEP_SUFFIX_RE = re.compile(r".*_(\d+)\.zip$")
+
+def _infer_steps_from_path(path: str | Path) -> Optional[int]:
+    m = _STEP_SUFFIX_RE.match(Path(path).name)
+    return int(m.group(1)) if m else None
 
 class PeriodicCheckpointCallback(BaseCallback):
     """Save model checkpoints every `save_every` timesteps.
@@ -43,6 +50,7 @@ class PeriodicCheckpointCallback(BaseCallback):
 
     def _on_training_start(self) -> bool:
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self._last_saved_step = int(self.model.num_timesteps // self.save_every * self.save_every)
         return True
 
     def _on_step(self) -> bool:
@@ -67,6 +75,11 @@ class InfoCountsLogger(BaseCallback):
         self._booleans = {}
         self._averages = {}
 
+    def _on_training_start(self) -> bool:
+        # avoid an immediate log burst on resume
+        self._last_log_step = int(self.model.num_timesteps // self.log_every * self.log_every)
+        return True
+
     def _on_step(self) -> bool:
         infos = self.locals.get("infos")
         if infos:
@@ -90,6 +103,7 @@ class InfoCountsLogger(BaseCallback):
                         self._averages.setdefault("metrics/depth", []).append(state.player.depth)
                         self._averages.setdefault("metrics/time", []).append(state.time)
                         self._averages.setdefault("metrics/score", []).append(state.player.score)
+                        self._averages.setdefault("metrics/level", []).append(state.player.level)
 
                         self._averages.setdefault(f"times/{ending}", []).append(state.time)
 
@@ -161,6 +175,7 @@ def main(
     name: str = "nethack",
     replay_dir: Optional[str] = "replays/",
     profile: bool = False,
+    continue_from: Optional[str] = None,
 ) -> None:
     """Train an agent to play NetHack.
 
@@ -217,16 +232,46 @@ def main(
     info_callback = InfoCountsLogger(log_every=100_000, verbose=1)
     callbacks = CallbackList([save_callback, info_callback])
 
-    model = MaskablePPO(
-        policy=yndf.NethackMaskablePolicy,
-        env=env,
-        verbose=1,
-        batch_size=batch_size,
-        n_steps=n_steps_per_env,
-        tensorboard_log=str(log_path),
-    )
+    if continue_from:
+        # Load model
+        model = MaskablePPO.load(continue_from, env=env)
 
-    model.learn(total_timesteps=total_timesteps, progress_bar=True, callback=callbacks)
+        # Infer already-trained steps: prefer model.num_timesteps, fall back to filename suffix
+        already = int(getattr(model, "num_timesteps", 0) or 0)
+        if already == 0:
+            parsed = _infer_steps_from_path(continue_from)
+            if parsed is not None:
+                already = parsed
+                model.num_timesteps = parsed  # so TB/logging use correct step base
+
+        remaining_timesteps = max(0, total_timesteps - already)
+
+        # Put logs under the same root directory; steps will continue from `model.num_timesteps`
+        model.set_logger(configure(str(log_path), ["stdout", "tensorboard"]))
+
+        # Keep your current rollout/batch sizing
+        model.n_steps = n_steps_per_env
+        model.batch_size = batch_size
+
+        print(f"[resume] Loaded '{continue_from}'. already_trained={already}, remaining={remaining_timesteps}.")
+        if remaining_timesteps == 0:
+            print("[resume] Requested total reached; nothing to do.")
+            model.save(str(out_path / model_file_name_base))
+            if hasattr(env, "close"):
+                env.close()
+            return
+    else:
+        model = MaskablePPO(
+            policy=yndf.NethackMaskablePolicy,
+            env=env,
+            verbose=1,
+            batch_size=batch_size,
+            n_steps=n_steps_per_env,
+            tensorboard_log=str(log_path),
+        )
+        remaining_timesteps = total_timesteps
+    model.learn(total_timesteps=remaining_timesteps, progress_bar=True, callback=callbacks,
+                reset_num_timesteps=False)
     model.save(str(out_path / model_file_name_base))
 
     print("Training finished and model saved.")
@@ -281,6 +326,13 @@ if __name__ == "__main__":
         help="Enable profiling of the training process (single-threaded).",
         default=False,
     )
+    parser.add_argument(
+        "--continue",
+        dest="continue_from",
+        type=str,
+        default=None,
+        help="Path to a saved model (.zip) to resume from.",
+    )
 
     args = parser.parse_args()
     if args.profile:
@@ -293,5 +345,6 @@ if __name__ == "__main__":
         name=args.name,
         log_dir=args.log_dir,
         replay_dir=args.replay_dir,
-        profile=args.profile
+        profile=args.profile,
+        continue_from=args.continue_from,
     )

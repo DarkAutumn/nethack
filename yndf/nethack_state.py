@@ -4,7 +4,7 @@ observation directly."""
 from typing import Optional, Tuple
 from nle import nethack
 
-from yndf.nethack_level import GLYPH_TABLE, DungeonLevel
+from yndf.nethack_level import BOULDER_GLYPH, GLYPH_TABLE, DungeonLevel
 
 CARDINALS: Tuple[Tuple[int, int], ...] = ((-1, 0), (0, 1), (1, 0), (0, -1))
 
@@ -147,7 +147,6 @@ class OriginalObservationInfo:
 
 class StuckBoulder:
     """A boulder that is stuck in a position."""
-    BOULDER_GLYPH = 2353
     def __init__(self, player_position, boulder_position):
         self.player_position = player_position
         self.boulder_position = boulder_position
@@ -186,15 +185,16 @@ class NethackState:
             self.time = obs['blstats'][nethack.NLE_BL_TIME]
 
             for boulder in self.stuck_boulders:
-                if self.glyphs[boulder.boulder_position] != StuckBoulder.BOULDER_GLYPH:
+                if self.glyphs[boulder.boulder_position] != BOULDER_GLYPH:
                     self.stuck_boulders.remove(boulder)
 
-            unpassable = [boulder.boulder_position
-                        for boulder in self.stuck_boulders
-                        if boulder.player_position == self.player.position] if self.stuck_boulders else []
+            self.stuck_boulders = [
+                b for b in self.stuck_boulders
+                if self.glyphs[b.boulder_position] == BOULDER_GLYPH
+            ]
 
             prev_floor = prev.floor if prev_is_usable else None
-            self.floor = DungeonLevel(self.glyphs, unpassable, self.locked_doors, prev_floor)
+            self.floor = DungeonLevel(self.glyphs, self.stuck_boulders, self.locked_doors, prev_floor)
 
         self.idle_action = self._was_idle(prev)
         self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
