@@ -1,7 +1,5 @@
 """Trains a Maskable PPO agent for Nethack navigation tasks."""
 
-from __future__ import annotations
-
 import argparse
 import cProfile
 from collections import Counter
