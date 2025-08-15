@@ -65,11 +65,13 @@ class NethackActionWrapper(gym.Wrapper):
             self._action_map[i] = self._unwrapped_actions.index(action)
 
         self._action_index_by_token = {tok: i for i, tok in enumerate(self.model_actions)}
+        self._valid_kick_actions = []
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
         self._state: NethackState = info["state"]
         info["action_mask"] = self.action_masks()
+        self._valid_kick_actions = self.get_valid_kick_actions(self._state)
         return obs, info
 
     def step(self, action):  # type: ignore[override]
@@ -82,10 +84,12 @@ class NethackActionWrapper(gym.Wrapper):
 
         elif action == self.kick_index or (is_user_input and action.action == 4):
             if not is_user_input:
-                actions = self.get_valid_kick_actions(self._state)
-                act = self.model_actions[self.kick_index].value
-                self.unwrapped.nethack.step(act)
-                action = actions[0]
+                self.unwrapped.nethack.step(self.model_actions[self.kick_index].value)
+                if self._valid_kick_actions:
+                    action = self._valid_kick_actions[0]
+                else:
+                    print("Warning: No valid kick actions available.")
+                    action = nethack.Command.ESC
 
         action = self._translate_action(action)
 
@@ -163,7 +167,8 @@ class NethackActionWrapper(gym.Wrapper):
 
         # Kick only if there is a locked door in a cardinal neighbor
         if self.kick_index is not None:
-            mask[self.kick_index] = len(self.get_valid_kick_actions(self._state)) > 0
+            self._valid_kick_actions = self.get_valid_kick_actions(self._state)
+            mask[self.kick_index] = len(self._valid_kick_actions) > 0
 
         if self.search_index is not None:
             mask[self.search_index] = self._get_search_mask(self._state)
