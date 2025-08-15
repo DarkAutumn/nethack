@@ -4,6 +4,8 @@ from functools import cached_property
 from nle import nethack
 import numpy as np
 
+BOULDER_GLYPH = 2353
+
 def _bit(value: int) -> np.uint32:
     """Return a bitmask for the given value."""
     return np.uint32(1 << value)
@@ -272,7 +274,7 @@ class DungeonLevel:
     WALLS_ADJACENT = _bit(GLYPH_TABLE.UNUSED_BIT + 5)
     DEAD_END = _bit(GLYPH_TABLE.UNUSED_BIT + 6)
 
-    def __init__(self, glyphs: np.ndarray, unpassable, locked, prev : 'DungeonLevel' = None):
+    def __init__(self, glyphs: np.ndarray, stuck_boulders, locked, prev : 'DungeonLevel' = None):
         self.glyphs = glyphs
 
         self.properties = GLYPH_TABLE.properties[glyphs] & ((1 << GLYPH_TABLE.UNUSED_BIT) - 1)
@@ -299,9 +301,6 @@ class DungeonLevel:
             if self.properties[pos] & GLYPH_TABLE.CLOSED_DOOR:
                 self.properties[pos] |= self.LOCKED_DOOR
 
-        for pos in unpassable:
-            self.properties[pos] &= ~GLYPH_TABLE.PASSABLE
-
         # some items are stuck in the wall or stone, but these are NOT passable
         passable = (self.properties & GLYPH_TABLE.PASSABLE) != 0
         barrier = self.barrier_mask
@@ -321,6 +320,8 @@ class DungeonLevel:
 
         dead_end_mask = self._calculate_dead_end_mask()
         self.properties[dead_end_mask] |= self.DEAD_END
+
+        self._stuck_forbid = self._build_stuck_forbid_mask(stuck_boulders, self.glyphs.shape)
 
         self.search_count = prev.search_count if prev else np.zeros_like(self.glyphs, dtype=np.uint8)
         self.search_score = self._compute_search_score()
@@ -397,8 +398,9 @@ class DungeonLevel:
         """Calculate the wavefront targets for the current state."""
         passable = (self.properties & GLYPH_TABLE.PASSABLE) != 0
         objects = (self.properties & GLYPH_TABLE.OBJECT) != 0
+        boulders = (self.glyphs == BOULDER_GLYPH)
 
-        interesting_objects = ~self.visited_mask & objects & passable
+        interesting_objects = ~self.visited_mask & objects & passable & ~boulders
 
         frontier = (self.properties & self.FRONTIER) != 0
         target_mask = interesting_objects | frontier
@@ -412,6 +414,40 @@ class DungeonLevel:
 
         target_mask &= ~self.stone_mask
         return target_mask
+
+    def _build_stuck_forbid_mask(self, stuck_boulders, shape):
+        """
+        Build a boolean mask forbid[y, x, d] where d is a cardinal direction index.
+        If True, the reverse-BFS wavefront must NOT expand from (y,x) to the
+        neighbor in direction d.
+
+        We store the *reverse* of your input pairs because wavefront expands
+        from targets outward: if forward move P->B is illegal, we must forbid
+        reverse expansion B->P during BFS.
+        """
+        h, w = shape
+        # Direction order matches the 'card' tuple in _calculate_wavefront.
+        # card = ((0,1), (1,0), (0,-1), (-1,0))  ->  E, S, W, N
+        dir_to_idx = {(0, 1): 0, (1, 0): 1, (0, -1): 2, (-1, 0): 3}
+        forbid = np.zeros((h, w, 4), dtype=bool)
+
+        if not stuck_boulders:
+            return forbid
+
+        for sb in stuck_boulders:
+            py, px = sb.player_position
+            by, bx = sb.boulder_position
+
+            dy, dx = (py - by), (px - bx)  # direction from boulder -> player (reverse edge)
+            idx = dir_to_idx.get((dy, dx))
+            if idx is None:
+                # Not cardinal-adjacent; ignore quietly (or assert if you prefer)
+                continue
+
+            if 0 <= by < h and 0 <= bx < w and 0 <= py < h and 0 <= px < w:
+                forbid[by, bx, idx] = True
+
+        return forbid
 
     def _calculate_wavefront(self) -> np.ndarray:
         # pylint: disable=too-many-locals
@@ -436,9 +472,14 @@ class DungeonLevel:
             new_wave = int(wave[y, x]) + 1
 
             # cardinals
-            for dy, dx in card:
+            for dir_idx, (dy, dx) in enumerate(card):
                 ny, nx = y + dy, x + dx
                 if 0 <= ny < h and 0 <= nx < w and passable[ny, nx] and wave[ny, nx] > new_wave:
+                    # Respect directed "stuck boulder" constraint:
+                    # if forward P->B is illegal, reverse expansion B->P must be blocked here.
+                    if self._stuck_forbid[y, x, dir_idx]:
+                        continue
+
                     wave[ny, nx] = new_wave
                     if new_wave < wavefront_max:
                         q.append((ny, nx))
@@ -453,7 +494,6 @@ class DungeonLevel:
                         if new_wave < wavefront_max:
                             q.append((ny, nx))
         return wave
-
 
     def _compute_search_score(self, depth=7, half_width=3) -> np.ndarray:
         props = self.properties
