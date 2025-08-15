@@ -3,8 +3,10 @@ import logging
 import os
 import random
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from collections import Counter
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -13,12 +15,15 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
-
 from tqdm import tqdm
 
 import yndf
-
 from models import NethackPolicy
+
+# ---- your callbacks are assumed to exist in this file/module ----
+# class PeriodicCheckpointCallback(BaseCallback): ...
+# class InfoCountsLogger(BaseCallback): ...
+# ---------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 LOG = logging.getLogger("ppo_train")
@@ -42,11 +47,9 @@ def make_env_thunk(env_id: str, seed: int, idx: int) -> Any:
 
 def get_action_masks_batch(envs: Any) -> Tuple[np.ndarray, np.ndarray]:
     """Fetch batched action masks from a vectorized env."""
-
     results = envs.call("action_masks")
-    verb_masks = np.stack([r[0] for r in results], axis=0)  # (B,V)
+    verb_masks = np.stack([r[0] for r in results], axis=0)       # (B,V)
     direction_masks = np.stack([r[1] for r in results], axis=0)  # (B,V,D)
-
     return verb_masks, direction_masks
 
 def pack_action_batch(verbs: np.ndarray, dirs: np.ndarray) -> Any:
@@ -57,29 +60,19 @@ def derive_invariant_batch(args: 'PPOArgs') -> tuple[int, int, int, int, int]:
     """
     Returns:
       num_steps, num_minibatches, minibatch_size, batch_target, batch_actual
-    Rules:
-      - batch_target = args.batch_size if provided else (num_envs * num_steps) [back-compat]
-      - num_steps = max(min_rollout_len, batch_target // num_envs)
-      - Choose num_minibatches so batch_actual % num_minibatches == 0 and minibatch_size is near desired
     """
     batch_target = args.batch_size if args.batch_size is not None else args.num_envs * args.num_steps
-    # steps per env per update
-    num_steps = max(args.min_rollout_len, batch_target // args.num_envs)
+    num_steps = max(args.min_rollout_len, batch_target // args.num_envs)  # steps per env per update
     batch_actual = args.num_envs * num_steps
 
-    # Derive num_minibatches / minibatch_size
     if args.minibatch_size is not None and args.minibatch_size > 0:
-        # try to get minibatch_size close to desired while dividing batch_actual exactly
         desired = max(1, int(args.minibatch_size))
-        # start with nearest number of minibatches
         nm = max(1, int(round(batch_actual / desired)))
-        # adjust downward until divisible
         while batch_actual % nm != 0 and nm > 1:
             nm -= 1
         num_minibatches = nm
         minibatch_size = batch_actual // num_minibatches
     else:
-        # keep user-provided num_minibatches; accept ragged last chunk if not divisible
         num_minibatches = args.num_minibatches
         minibatch_size = batch_actual // num_minibatches
 
@@ -98,8 +91,8 @@ class RolloutBatch:
     value: torch.Tensor                   # (T*B,)
     advantages: torch.Tensor              # (T*B,)
     returns: torch.Tensor                 # (T*B,)
-    verb_mask: torch.Tensor               # (T*B, A)  mask at action time
-    dir_mask_selected: torch.Tensor       # (T*B, 9)  mask row for chosen verb at action time
+    verb_mask: torch.Tensor               # (T*B, A)
+    dir_mask_selected: torch.Tensor       # (T*B, 9)
     requires_dir: torch.Tensor            # (T*B,) bool
 
 class RolloutBuffer:
@@ -109,7 +102,6 @@ class RolloutBuffer:
         self.device = device
         self.num_verbs = num_verbs
 
-        # Preallocate storage
         self.obs: Dict[str, List[np.ndarray]] = {k: [] for k in obs_example.keys()}
         self.action_verb: List[np.ndarray] = []
         self.action_dir: List[np.ndarray] = []
@@ -120,6 +112,8 @@ class RolloutBuffer:
         self.verb_mask: List[np.ndarray] = []
         self.dir_mask_selected: List[np.ndarray] = []
         self.requires_dir: List[np.ndarray] = []
+        self._advantages_np = None
+        self._returns_np = None
 
     def add(
         self,
@@ -147,7 +141,6 @@ class RolloutBuffer:
         self.requires_dir.append(np.asarray(requires_dir))
 
     def compute_gae(self, last_value: np.ndarray, gamma: float, gae_lambda: float) -> Tuple[np.ndarray, np.ndarray]:
-        # Shapes: lists length T of arrays (B,)
         T = len(self.rewards)
         B = self.rewards[0].shape[0]
         advantages = np.zeros((T, B), dtype=np.float32)
@@ -162,7 +155,6 @@ class RolloutBuffer:
         return advantages, returns
 
     def to_batches(self) -> RolloutBatch:
-        # Flatten T and B
         def _stack_flat(key: str) -> torch.Tensor:
             arr = np.stack(self.obs[key], axis=0)  # (T,B,...)
             T, B = arr.shape[:2]
@@ -182,7 +174,6 @@ class RolloutBuffer:
         old_logprob = _stack1(self.old_logprob).float()
         value = _stack1(self.value).float()
 
-        # Advantages/returns are computed after rollout
         advantages_np = getattr(self, "_advantages_np")
         returns_np = getattr(self, "_returns_np")
         advantages = torch.as_tensor(advantages_np.reshape(-1), device=self.device)
@@ -210,13 +201,200 @@ class RolloutBuffer:
         self._returns_np = returns        # (T,B)
 
 # -------------------------
+# SB3-callback compatibility adapters
+# -------------------------
+
+class ModelSaver:
+    """
+    Minimal object that exposes the attributes SB3 callbacks expect:
+    - num_timesteps
+    - save(path)
+    - logger
+    """
+    def __init__(self, policy: nn.Module, optimizer: optim.Optimizer, args_obj: 'PPOArgs',
+                 get_step, writer: SummaryWriter | None) -> None:
+        self._policy = policy
+        self._optimizer = optimizer
+        self._args = args_obj
+        self._get_step = get_step
+
+    @property
+    def num_timesteps(self) -> int:
+        return int(self._get_step())
+
+    def save(self, path: str) -> None:
+        """Save training state to the given path (extension '.zip' is fine)."""
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "policy_state_dict": self._policy.state_dict(),
+            "optimizer_state_dict": self._optimizer.state_dict(),
+            "args": asdict(self._args),
+            "num_timesteps": self.num_timesteps,
+            "timestamp": int(time.time()),
+            "rng_state": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state().tolist(),
+                "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            },
+        }
+        torch.save(state, str(p))
+
+# -
+
+class PeriodicCheckpointCallback:
+    """Save model checkpoints every `save_every` timesteps."""
+    def __init__(self, save_every: int, save_dir: Path, model_name: str) -> None:
+        self.save_every = int(save_every)
+        self.save_dir = Path(save_dir)
+        self.model_name = model_name
+        self.next_save_step = self.save_every
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+
+    def save(self, steps, model) -> bool:
+        """Saves the model after a certain number of steps."""
+        if steps >= self.next_save_step:
+            path = self.save_dir / f"{self.model_name}_{steps}.zip"
+            model.save(str(path))
+            self.next_save_step += self.save_every
+
+class InfoCountsLogger:
+    """Log counts of various info keys during training."""
+    def __init__(self, log_every: int, logger) -> None:
+        self.logger = logger
+        self._log_every = log_every
+        self._next_log_step = self._log_every
+        self._next_short_log_step = 4096
+        self._emitted = set()
+        self._counters = {}
+        self._values = {}
+        self._booleans = {}
+        self._averages = {}
+        self._averages_short = {}
+
+    def _build_dict(self, d, i):
+        result = {}
+        for k, v in d.items():
+            presence = '_' + k
+            if presence in d:
+                if d[presence][i]:
+                    if isinstance(v, dict):
+                        result[k] = self._build_dict(v, i)
+                    else:
+                        result[k] = v[i]
+        return result
+
+    def on_step(self, infos) -> bool:
+        count = len(next(iter(infos.values())))
+        for i in range(count):
+            info = self._build_dict(infos, i)
+            if not info:
+                continue
+
+            state : yndf.NethackState = info.get("state", None)
+            if state is not None:
+                self._add_boolean("metrics/idle-moves", state.idle_action)
+
+            if (total_reward := info.get("total_reward", None)) is not None:
+                self._averages_short.setdefault("metrics/total_reward", []).append(total_reward)
+
+            if (total_steps := info.get("total_steps", None)) is not None:
+                self._averages_short.setdefault("metrics/total_steps", []).append(total_steps)
+
+            if (ending := info.get("ending", None)) is not None:
+                self._counters.setdefault("endings", []).append(ending)
+                if state is not None:
+                    self._averages.setdefault("metrics/depth", []).append(state.player.depth)
+                    self._averages.setdefault("metrics/time", []).append(state.time)
+                    self._averages.setdefault("metrics/score", []).append(state.player.score)
+                    self._averages.setdefault("metrics/level", []).append(state.player.level)
+
+                    self._averages.setdefault(f"times/{ending}", []).append(state.time)
+
+            if (rewards := info.get("rewards", None)) is not None:
+                for name, value in rewards.items():
+                    key = f"rewards/{name}"
+                    self._values[key] = self._values.get(key, 0.0) + value
+
+        return True
+
+    def _add_boolean(self, key: str, value: Optional[bool]) -> None:
+        if value is not None:
+            v = self._booleans.get(key, (0, 0))
+            self._booleans[key] = (v[0] + (1 if value else 0), v[1] + 1)
+
+
+    def should_emit_short(self, steps):
+        return self._next_short_log_step >= steps
+
+    def should_emit_long(self, steps):
+        return self._next_log_step >= steps
+
+    def emit_short_running(self, steps) -> bool:
+        self._emit_averages(steps, self._averages_short, None, None)
+        self._next_short_log_step += 4096
+
+    def emit_long_running(self, steps) -> bool:
+        self._next_log_step += self._log_every
+
+        curr_emitted = set()
+        for base_name, values in self._counters.items():
+            counter = Counter(values)
+            for name, count in counter.items():
+                key = f"{base_name}/{name}"
+                self.logger.add_scalar(key, count / len(values) if values else 0, steps)
+                curr_emitted.add(key)
+                self._emitted.add(key)
+
+        self._emit_averages(steps, self._averages, curr_emitted, self._emitted)
+
+        for key, value in self._values.items():
+            self.logger.add_scalar(key, value, steps)
+            curr_emitted.add(key)
+            self._emitted.add(key)
+
+        for key, value in self._booleans.items():
+            self.logger.add_scalar(key, value[0] / value[1] if value[1] > 0 else 0, steps)
+            curr_emitted.add(key)
+            self._emitted.add(key)
+
+        missing = self._emitted - curr_emitted
+        for key in missing:
+            self.logger.add_scalar(key, 0, steps)
+
+        # Reset for the next rollout window
+        for v in self._counters.values():
+            v.clear()
+
+        for k in self._values:
+            self._values[k] = 0.0
+
+        for k in self._booleans:
+            self._booleans[k] = (0, 0)
+
+    def _emit_averages(self, steps, averages, emitted, all_emitted):
+        for name, values in averages.items():
+            if values:
+                avg = sum(values) / len(values)
+                self.logger.add_scalar(name, avg, steps)
+                if emitted:
+                    emitted.add(name)
+                if all_emitted:
+                    all_emitted.add(name)
+
+        for value in self._averages.values():
+            value.clear()
+
+
+# -------------------------
 # Training
 # -------------------------
 
 @dataclass
 class PPOArgs:
     env_id: str = "YenderFlow-v0"
-    total_timesteps: int = 2_000_000
+    total_timesteps: int = 25_000_000
     num_envs: int = 20
     num_steps: int = 128
     learning_rate: float = 3e-4
@@ -232,11 +410,18 @@ class PPOArgs:
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     glyph_vocab_size: int = 6000
-    exp_name: str = "ppo_verb_dir"
+    exp_name: str = "nethack"
+
+    # logging / saving
     track_tb: bool = True
-    batch_size: int | None = None        # total samples per update; if None, defaults to num_envs * num_steps
-    min_rollout_len: int = 64            # floor on num_steps for stability (esp. with GAE/RNN)
-    minibatch_size: int | None = 256     # desired per-SGD minibatch size; if None, keep num_minibatche
+    model_name: str = "nethack"
+    save_every: int = 100_000                 # checkpoint cadence in timesteps
+    log_every: int | None = None              # if None, logs once per update at rollout end
+
+    # batch geometry
+    batch_size: int | None = None
+    min_rollout_len: int = 64
+    minibatch_size: int | None = 256
 
 
 def parse_args() -> PPOArgs:
@@ -258,6 +443,16 @@ def parse_args() -> PPOArgs:
     parser.add_argument("--seed", type=int, default=PPOArgs.seed)
     parser.add_argument("--glyph-vocab-size", type=int, default=PPOArgs.glyph_vocab_size)
     parser.add_argument("--exp-name", type=str, default=PPOArgs.exp_name)
+
+    # new knobs
+    parser.add_argument("--model-name", type=str, default=None,
+                        help="Name used for checkpoints and TensorBoard logs (default: exp_name)")
+    parser.add_argument("--save-every", type=int, default=PPOArgs.save_every,
+                        help="Checkpoint cadence in timesteps for PeriodicCheckpointCallback")
+    parser.add_argument("--log-every", type=int, default=None,
+                        help="If set, InfoCountsLogger logs every N timesteps on rollout end; "
+                             "default is once per update (num_envs * num_steps).")
+
     parser.add_argument("--no-tb", action="store_true", help="Disable TensorBoard logging")
     parser.add_argument("--device", type=str, default=PPOArgs.device)
     parser.add_argument("--batch-size", type=int, default=None,
@@ -291,6 +486,9 @@ def parse_args() -> PPOArgs:
         batch_size=args_ns.batch_size,
         min_rollout_len=args_ns.min_rollout_len,
         minibatch_size=args_ns.minibatch_size,
+        model_name=(args_ns.model_name or args_ns.exp_name),
+        save_every=args_ns.save_every,
+        log_every=args_ns.log_every,
     )
     return args
 
@@ -305,9 +503,8 @@ def main() -> None:
     else:
         envs = SyncVectorEnv([make_env_thunk(args.env_id, args.seed, 0)])
 
-    # Reset an get an initial observation to infer shapes
+    # Reset and get an initial observation to infer shapes
     obs_np, _ = envs.reset()
-    # Initial masks to infer num_verbs
     verb_mask_np, dir_mask_np = get_action_masks_batch(envs)
     num_verbs = verb_mask_np.shape[1]
     num_directions = dir_mask_np.shape[2]
@@ -318,7 +515,8 @@ def main() -> None:
 
     writer: SummaryWriter | None = None
     if args.track_tb:
-        logdir = os.path.join("runs", f"{args.exp_name}_{int(time.time())}")
+        logdir = os.path.join("logs", args.model_name)
+        Path(logdir).mkdir(parents=True, exist_ok=True)
         writer = SummaryWriter(log_dir=logdir)
         LOG.info("TensorBoard logging to: %s", logdir)
 
@@ -336,14 +534,24 @@ def main() -> None:
     # Rollout buffer
     rb = RolloutBuffer(args.num_steps, args.num_envs, obs_example=obs_np, num_verbs=num_verbs, device=device)
 
+    # ---- set up SB3-style callbacks via adapters ----
     global_step = 0
+    def _get_step() -> int:
+        return global_step
+
+    model_adapter = ModelSaver(policy, optimizer, args, get_step=_get_step, writer=writer)
+
+    checkpoints = PeriodicCheckpointCallback(save_every=int(args.save_every), save_dir=Path("models"),
+                                             model_name=args.model_name)
+    info_logger = InfoCountsLogger(100_000, writer)
+
     start_time = time.time()
     next_obs = obs_np
 
     progress = tqdm(total=args.total_timesteps)
     while global_step < args.total_timesteps:
         # Collect a rollout of num_steps
-        for step in range(args.num_steps):
+        for _ in range(args.num_steps):
             global_step += args.num_envs
             progress.update(args.num_envs)
 
@@ -359,34 +567,23 @@ def main() -> None:
                 act_verb_t, act_dir_t, logprob_t, value_t, _, _ = policy.get_action_and_value(
                     obs_t, verb_mask, dir_mask, action_verb=None, action_dir=None, deterministic=False
                 )
-                # For storage and env stepping, move to CPU numpy
                 act_verb = act_verb_t.cpu().numpy()
                 act_dir = act_dir_t.cpu().numpy()
                 logprob = logprob_t.cpu().numpy()
                 value = value_t.cpu().numpy()
-                # Save selected dir mask row and requires_dir flag
                 batch_idx = np.arange(args.num_envs)
                 dir_mask_selected = dir_mask_np[batch_idx, act_verb, :]  # (B,9)
                 requires_dir = dir_mask_selected.any(axis=1)
 
             # Step the envs
             env_actions = pack_action_batch(act_verb, act_dir)
-            # pylint: disable=unbalanced-tuple-unpacking
             next_obs, rewards, terminations, truncations, infos = envs.step(env_actions)
             dones = np.logical_or(terminations, truncations)
 
             # Bookkeeping
-            rb.add(
-                obs=obs_np,
-                action_verb=act_verb,
-                action_dir=act_dir,
-                old_logprob=logprob,
-                value=value,
-                reward=rewards,
-                done=dones,
-                verb_mask=verb_mask_np,
-                dir_mask_selected=dir_mask_selected,
-                requires_dir=requires_dir.astype(np.bool_),
+            rb.add(obs=obs_np, action_verb=act_verb, action_dir=act_dir, old_logprob=logprob, value=value,
+                   reward=rewards, done=dones, verb_mask=verb_mask_np, dir_mask_selected=dir_mask_selected,
+                   requires_dir=requires_dir.astype(np.bool_),
             )
 
             # Logging episodic returns if provided
@@ -397,6 +594,7 @@ def main() -> None:
                         writer.add_scalar("charts/episodic_return", ep["r"], global_step)
                         writer.add_scalar("charts/episodic_length", ep["l"], global_step)
 
+            info_logger.on_step(infos)
             obs_np = next_obs  # store for next add()
 
         # Bootstrap value for GAE
@@ -472,6 +670,15 @@ def main() -> None:
             # End of epoch
         # End of update
 
+        if checkpoints.next_save_step <= global_step:
+            checkpoints.save(global_step, model_adapter)
+
+        if info_logger.should_emit_short(global_step):
+            info_logger.emit_short_running(global_step)
+
+        if info_logger.should_emit_long(global_step):
+            info_logger.emit_long_running(global_step)
+
         # Logging
         if writer is not None:
             writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
@@ -485,7 +692,6 @@ def main() -> None:
         # Reset buffer for next rollout
         rb = RolloutBuffer(args.num_steps, args.num_envs, obs_example=next_obs, num_verbs=num_verbs, device=device)
 
-    # Cleanup
     envs.close()
     progress.close()
     if writer is not None:
