@@ -53,6 +53,38 @@ def pack_action_batch(verbs: np.ndarray, dirs: np.ndarray) -> Any:
     """Pack (verb, dir) batch into the environment's expected action format."""
     return list(zip(verbs.tolist(), dirs.tolist()))
 
+def derive_invariant_batch(args: 'PPOArgs') -> tuple[int, int, int, int, int]:
+    """
+    Returns:
+      num_steps, num_minibatches, minibatch_size, batch_target, batch_actual
+    Rules:
+      - batch_target = args.batch_size if provided else (num_envs * num_steps) [back-compat]
+      - num_steps = max(min_rollout_len, batch_target // num_envs)
+      - Choose num_minibatches so batch_actual % num_minibatches == 0 and minibatch_size is near desired
+    """
+    batch_target = args.batch_size if args.batch_size is not None else args.num_envs * args.num_steps
+    # steps per env per update
+    num_steps = max(args.min_rollout_len, batch_target // args.num_envs)
+    batch_actual = args.num_envs * num_steps
+
+    # Derive num_minibatches / minibatch_size
+    if args.minibatch_size is not None and args.minibatch_size > 0:
+        # try to get minibatch_size close to desired while dividing batch_actual exactly
+        desired = max(1, int(args.minibatch_size))
+        # start with nearest number of minibatches
+        nm = max(1, int(round(batch_actual / desired)))
+        # adjust downward until divisible
+        while batch_actual % nm != 0 and nm > 1:
+            nm -= 1
+        num_minibatches = nm
+        minibatch_size = batch_actual // num_minibatches
+    else:
+        # keep user-provided num_minibatches; accept ragged last chunk if not divisible
+        num_minibatches = args.num_minibatches
+        minibatch_size = batch_actual // num_minibatches
+
+    return num_steps, num_minibatches, minibatch_size, batch_target, batch_actual
+
 # -------------------------
 # Storage (rollouts)
 # -------------------------
@@ -202,6 +234,10 @@ class PPOArgs:
     glyph_vocab_size: int = 6000
     exp_name: str = "ppo_verb_dir"
     track_tb: bool = True
+    batch_size: int | None = None        # total samples per update; if None, defaults to num_envs * num_steps
+    min_rollout_len: int = 64            # floor on num_steps for stability (esp. with GAE/RNN)
+    minibatch_size: int | None = 256     # desired per-SGD minibatch size; if None, keep num_minibatche
+
 
 def parse_args() -> PPOArgs:
     parser = argparse.ArgumentParser()
@@ -224,6 +260,13 @@ def parse_args() -> PPOArgs:
     parser.add_argument("--exp-name", type=str, default=PPOArgs.exp_name)
     parser.add_argument("--no-tb", action="store_true", help="Disable TensorBoard logging")
     parser.add_argument("--device", type=str, default=PPOArgs.device)
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Target total batch per update. If omitted, uses num_envs * num_steps.")
+    parser.add_argument("--min-rollout-len", type=int, default=PPOArgs.min_rollout_len,
+                        help="Minimum steps per env per update (floor).")
+    parser.add_argument("--minibatch-size", type=int, default=PPOArgs.minibatch_size,
+                        help="Desired minibatch size. If provided, num_minibatches will be derived.")
+
     args_ns = parser.parse_args()
     args = PPOArgs(
         env_id=args_ns.env_id,
@@ -245,6 +288,9 @@ def parse_args() -> PPOArgs:
         exp_name=args_ns.exp_name,
         track_tb=not args_ns.no_tb,
         device=args_ns.device,
+        batch_size=args_ns.batch_size,
+        min_rollout_len=args_ns.min_rollout_len,
+        minibatch_size=args_ns.minibatch_size,
     )
     return args
 
@@ -275,6 +321,17 @@ def main() -> None:
         logdir = os.path.join("runs", f"{args.exp_name}_{int(time.time())}")
         writer = SummaryWriter(log_dir=logdir)
         LOG.info("TensorBoard logging to: %s", logdir)
+
+    # Derive invariant-batch rollout sizes
+    num_steps, num_minibatches, mb_size, batch_target, batch_actual = derive_invariant_batch(args)
+    args.num_steps = num_steps
+    args.num_minibatches = num_minibatches
+
+    LOG.info(
+        "Invariant batch config: target=%d -> actual=%d = %d envs × %d steps; "
+        "minibatch_size=%d; num_minibatches=%d",
+        batch_target, batch_actual, args.num_envs, args.num_steps, mb_size, args.num_minibatches
+    )
 
     # Rollout buffer
     rb = RolloutBuffer(args.num_steps, args.num_envs, obs_example=obs_np, num_verbs=num_verbs, device=device)
@@ -364,6 +421,7 @@ def main() -> None:
         # PPO update
         bsz = batch.action_verb.shape[0]  # T*B
         minibatch_size = bsz // args.num_minibatches
+        assert bsz % args.num_minibatches == 0, f"Batch {bsz} not divisible by num_minibatches {args.num_minibatches}"
         idxs = np.arange(bsz)
 
         for _ in range(args.update_epochs):
