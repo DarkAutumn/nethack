@@ -49,10 +49,10 @@ class UserInputAction:
 class NethackActionWrapper(gym.Wrapper):
     """Convert NLE observation → dict(glyphs, visited_mask, agent_yx)."""
 
-    def __init__(self, env : gym.Env, actions) -> None:
+    def __init__(self, env : gym.Env) -> None:
         super().__init__(env)
 
-        self.action_space = gym.spaces.Discrete(len(actions))
+        self.action_space = gym.spaces.MultiDiscrete([len(VERBS), len(DIRECTIONS)])
         self._state: NethackState = None
         self._action_to_index = {}
 
@@ -75,7 +75,7 @@ class NethackActionWrapper(gym.Wrapper):
                     self.unwrapped.nethack.step(ord(c))
 
         elif verb == nethack.Command.KICK:
-            self.unwrapped.nethack.step(ord('k'))
+            self.unwrapped.nethack.step(nethack.Command.KICK.value)
             index = self._get_env_index(direction)
 
         obs, reward, terminated, truncated, info = self.env.step(index)
@@ -192,7 +192,7 @@ class NethackActionWrapper(gym.Wrapper):
         open_door = floor.open_doors
 
         # in-bounds?
-        if not (0 <= ny <= open_door.shape[0] and 0 <= nx <= open_door.shape[1]):
+        if not (0 <= ny < open_door.shape[0] and 0 <= nx < open_door.shape[1]):
             return False
 
         # Block diagonal through an open door (at either endpoint)
