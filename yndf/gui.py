@@ -9,7 +9,6 @@ which embeds the game frame (chars+colors), action, reward, labels,
 and optional ending. The frame and color arrays are now guaranteed
 to be the same shape (24 rows x 80 columns).
 """
-from __future__ import annotations
 from enum import Enum
 from pathlib import Path
 import sys
@@ -20,7 +19,7 @@ from typing import Dict, Optional, List, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 import numpy as np
-
+3
 from yndf.nethack_level import GLYPH_TABLE, DungeonLevel
 from yndf.nethack_state import NethackState
 
@@ -35,9 +34,10 @@ class StepInfo:
     """Information about a single step in the game."""
     state: NethackState
     action: str
+    action_name: str
     reward: float
     reward_labels: List[Tuple[str, float]]
-    properties : Dict[str, object]
+    properties: Dict[str, object]
     ending: Optional[Enum | str] = None
 
 # --------------------------------------------------------------------------- #
@@ -389,7 +389,7 @@ class NetHackWindow(QtWidgets.QMainWindow):
         self._on_step(code)
 
     def _add_step(self, step: StepInfo) -> None:
-        item = QtWidgets.QTreeWidgetItem([step.action, f"{step.reward:+.3f}"])
+        item = QtWidgets.QTreeWidgetItem([step.action_name, f"{step.reward:+.3f}"])
         for lbl, val in step.reward_labels:
             QtWidgets.QTreeWidgetItem(item, [f"• {lbl}", f"{val:+.3f}"])
             self._rewards_counter[lbl] += val
