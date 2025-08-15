@@ -55,12 +55,18 @@ class NethackRewardWrapper(gym.Wrapper):
         if not has_search:
             self.endings.append(NoForwardPathWithoutSearching())
 
+        self._total_steps = 0
+        self._total_reward = 0
+
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
         self._prev = info["state"]
 
         for ending in self.endings:
             ending.reset(self._prev)
+
+        self._total_steps = 0
+        self._total_reward = 0
 
         return obs, info
 
@@ -91,6 +97,13 @@ class NethackRewardWrapper(gym.Wrapper):
         for r in reward_list:
             reward += r.value
             details[r.name] = details.get(r.name, 0.0) + r.value
+
+        self._total_reward += reward
+        self._total_steps += 1
+
+        if terminated or truncated:
+            info['total_reward'] = self._total_reward
+            info['total_steps'] = self._total_steps
 
         self._prev = state
         return obs, reward, terminated, truncated, info
