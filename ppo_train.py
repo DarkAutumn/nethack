@@ -6,7 +6,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Callable
 
 import gymnasium as gym
 import numpy as np
@@ -16,6 +16,7 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from tqdm import tqdm
+from nle import nethack
 
 import yndf
 from models import NethackPolicy
@@ -204,15 +205,16 @@ class RolloutBuffer:
 # SB3-callback compatibility adapters
 # -------------------------
 
+
+
 class ModelSaver:
     """
     Minimal object that exposes the attributes SB3 callbacks expect:
     - num_timesteps
     - save(path)
-    - logger
+    - logger  (not used here)
     """
-    def __init__(self, policy: nn.Module, optimizer: optim.Optimizer, args_obj: 'PPOArgs',
-                 get_step, writer: SummaryWriter | None) -> None:
+    def __init__(self, policy: nn.Module, optimizer: optim.Optimizer, args_obj: "PPOArgs", get_step: Callable[[], int]):
         self._policy = policy
         self._optimizer = optimizer
         self._args = args_obj
@@ -223,7 +225,7 @@ class ModelSaver:
         return int(self._get_step())
 
     def save(self, path: str) -> None:
-        """Save training state to the given path (extension '.zip' is fine)."""
+        """Save training state to the given path (extension can be .zip/.pt/etc.)."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         state = {
@@ -239,7 +241,92 @@ class ModelSaver:
                 "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             },
         }
+
         torch.save(state, str(p))
+
+    @staticmethod
+    def load_checkpoint(path: str, device: str | torch.device = "cpu") -> dict[str, Any]:
+        """Low-level: just read the checkpoint dict."""
+        return torch.load(path, map_location=device)
+
+    @staticmethod
+    def load_as_inference(
+        path: str,
+        policy_builder: Callable[[dict[str, Any]], nn.Module],
+        device: str | torch.device = "cpu",
+    ) -> "InferenceAdapter":
+        """
+        High-level: build a policy via `policy_builder(args_dict)`,
+        load weights, and wrap with an SB3-like .predict().
+        """
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+        args_dict: dict[str, Any] = ckpt.get("args", {})
+        policy = policy_builder(args_dict).to(device)
+        policy.load_state_dict(ckpt["policy_state_dict"])
+        policy.eval()
+        return InferenceAdapter(policy, device=device)
+
+
+class InferenceAdapter:
+    """SB3-like wrapper: exposes .predict(obs, deterministic=False, action_masks=None).
+    If your policy has .act(obs, action_mask=..., deterministic=...), that's used.
+    Otherwise we assume policy(obs) -> logits for a Discrete action space.
+    """
+    def __init__(self, policy: nn.Module, device: str | torch.device = "cpu") -> None:
+        self.policy = policy
+        self.device = torch.device(device)
+
+    @staticmethod
+    def _to_tensor(x: Any, device: torch.device, unsqueeze: bool = False) -> Any:
+        """Recursively move obs/masks to a torch tensor on device."""
+
+        result = None
+        if torch.is_tensor(x):
+            result = x.to(device)
+            if unsqueeze:
+                result = result.unsqueeze(0)
+        elif isinstance(x, np.ndarray):
+            result = torch.from_numpy(x).to(device)
+            if unsqueeze:
+                result = result.unsqueeze(0)
+        elif isinstance(x, (list, tuple)):
+            result = type(x)(InferenceAdapter._to_tensor(v, device, unsqueeze=unsqueeze) for v in x)
+        elif isinstance(x, dict):
+            result = {k: InferenceAdapter._to_tensor(v, device, unsqueeze=unsqueeze) for k, v in x.items()}
+        else:
+            try:
+                result = torch.as_tensor(x, device=device)
+                if unsqueeze:
+                    result = result.unsqueeze(0)
+            except Exception:
+                return x  # leave as-is if truly non-tensor data structure
+
+        return result
+
+    @torch.inference_mode()
+    def predict(self, obs: Any, deterministic: bool, action_masks : Tuple[torch.tensor, torch.tensor], unsqueeze):
+        obs_t = InferenceAdapter._to_tensor(obs, self.device, unsqueeze)
+
+        verb_mask_t: Optional[torch.Tensor] = None
+        dir_mask_t: Optional[torch.Tensor] = None
+        if action_masks is not None:
+            verb_mask_t, dir_mask_t = action_masks
+            verb_mask_t = InferenceAdapter._to_tensor(verb_mask_t, self.device, unsqueeze)
+            dir_mask_t = InferenceAdapter._to_tensor(dir_mask_t, self.device, unsqueeze)
+
+        act_verb_t, act_dir_t, _, _, _, _ = self.policy.get_action_and_value(
+            obs_t,
+            verb_mask_t,
+            dir_mask_t,
+            action_verb=None,
+            action_dir=None,
+            deterministic=deterministic,
+        )
+
+        act_verb = act_verb_t.detach().cpu().item()
+        act_dir = act_dir_t.detach().cpu().item()
+
+        return (act_verb, act_dir), None
 
 # -
 
@@ -265,7 +352,8 @@ class InfoCountsLogger:
         self.logger = logger
         self._log_every = log_every
         self._next_log_step = self._log_every
-        self._next_short_log_step = 4096
+        self._short_log_every = 10_000
+        self._next_short_log_step = self._short_log_every
         self._emitted = set()
         self._counters = {}
         self._values = {}
@@ -326,14 +414,14 @@ class InfoCountsLogger:
 
 
     def should_emit_short(self, steps):
-        return self._next_short_log_step >= steps
+        return self._next_short_log_step <= steps
 
     def should_emit_long(self, steps):
-        return self._next_log_step >= steps
+        return self._next_log_step <= steps
 
     def emit_short_running(self, steps) -> bool:
         self._emit_averages(steps, self._averages_short, None, None)
-        self._next_short_log_step += 4096
+        self._next_short_log_step += self._short_log_every
 
     def emit_long_running(self, steps) -> bool:
         self._next_log_step += self._log_every
@@ -383,7 +471,7 @@ class InfoCountsLogger:
                 if all_emitted:
                     all_emitted.add(name)
 
-        for value in self._averages.values():
+        for value in averages.values():
             value.clear()
 
 
@@ -409,7 +497,6 @@ class PPOArgs:
     max_grad_norm: float = 0.5
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    glyph_vocab_size: int = 6000
     exp_name: str = "nethack"
 
     # logging / saving
@@ -441,7 +528,6 @@ def parse_args() -> PPOArgs:
     parser.add_argument("--vf-coef", type=float, default=PPOArgs.vf_coef)
     parser.add_argument("--max-grad-norm", type=float, default=PPOArgs.max_grad_norm)
     parser.add_argument("--seed", type=int, default=PPOArgs.seed)
-    parser.add_argument("--glyph-vocab-size", type=int, default=PPOArgs.glyph_vocab_size)
     parser.add_argument("--exp-name", type=str, default=PPOArgs.exp_name)
 
     # new knobs
@@ -479,7 +565,6 @@ def parse_args() -> PPOArgs:
         vf_coef=args_ns.vf_coef,
         max_grad_norm=args_ns.max_grad_norm,
         seed=args_ns.seed,
-        glyph_vocab_size=args_ns.glyph_vocab_size,
         exp_name=args_ns.exp_name,
         track_tb=not args_ns.no_tb,
         device=args_ns.device,
@@ -510,7 +595,7 @@ def main() -> None:
     num_directions = dir_mask_np.shape[2]
     LOG.info("Num verbs: %d, Directions: %d", num_verbs, num_directions)
 
-    policy = NethackPolicy(num_verbs=num_verbs, glyph_vocab_size=args.glyph_vocab_size).to(device)
+    policy = NethackPolicy(num_verbs=num_verbs, glyph_vocab_size=nethack.NO_GLYPH).to(device)
     optimizer = optim.Adam(policy.parameters(), lr=args.learning_rate, eps=1e-5)
 
     writer: SummaryWriter | None = None
@@ -539,7 +624,7 @@ def main() -> None:
     def _get_step() -> int:
         return global_step
 
-    model_adapter = ModelSaver(policy, optimizer, args, get_step=_get_step, writer=writer)
+    model_adapter = ModelSaver(policy, optimizer, args, get_step=_get_step)
 
     checkpoints = PeriodicCheckpointCallback(save_every=int(args.save_every), save_dir=Path("models"),
                                              model_name=args.model_name)
