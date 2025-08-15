@@ -24,13 +24,13 @@ class Reward:
 class Rewards:
     """Enum for different types of rewards for the agent."""
     STEP = Reward("step", -0.0015)
-    HURT = Reward("took-damage", -0.05)
-    KILL = Reward("kill-enemy", 0.5)
+    HURT = Reward("took-damage", -0.1)
+    KILL = Reward("kill-enemy", 1.0)
     DESCENDED = Reward("descended", 1.0)
     DIED = Reward("died", -5.0)
     STARVED = Reward("starved", 1.0)   # until we can eat, this is a reward for making it this long
-    LEVEL_UP = Reward("level-up", 0.5)
-    GOLD = Reward("gold", 0.05)
+    LEVEL_UP = Reward("level-up", 1)
+    GOLD = Reward("gold", 0.5)
     SCORE = Reward("score", 0.01) # any increase in score not rewarded by something else
     REVEALED_TILE = Reward("revealed-tile", 0.01, max_value=0.05)
     REACHED_FRONTIER = Reward("reached-frontier", 0.05)
