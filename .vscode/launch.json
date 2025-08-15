@@ -11,6 +11,15 @@
             "justMyCode": false
         },
         {
+            "name": "Train New",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "ppo_train.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
             "name": "Reward Debugger",
             "type": "debugpy",
             "request": "launch",

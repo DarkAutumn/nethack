@@ -1,7 +1,7 @@
 """A wrapper to expose NethackState object as info['state']."""
 
 import gymnasium as gym
-from yndf.wrapper_actions import DIRECTION_MAP
+from yndf.wrapper_actions import COORDINATE_MAP
 from yndf.nethack_state import NethackState
 
 class NethackStateWrapper(gym.Wrapper):
@@ -39,7 +39,7 @@ class NethackStateWrapper(gym.Wrapper):
 
     def _get_target_position(self, action):
         actions = self.env.unwrapped.actions
-        direction = DIRECTION_MAP[actions[action]]
+        direction = COORDINATE_MAP[actions[action]]
         pos = (self._current_state.player.position[0] + direction[0],
                    self._current_state.player.position[1] + direction[1])
 
