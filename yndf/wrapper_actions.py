@@ -65,8 +65,9 @@ class NethackActionWrapper(gym.Wrapper):
         verb, direction, index = self._action_to_verb(action)
 
         # search is always an 22 turn search
-        if verb == nethack.Command.SEARCH:
-            remaining_search = SEARCH_COUNT - self._state.floor.search_count[self._state.player.position]
+        search_count = self._state.floor.search_count[self._state.player.position]
+        if verb == nethack.Command.SEARCH and search_count < SEARCH_COUNT:
+            remaining_search = SEARCH_COUNT - search_count
             if remaining_search > 1:
                 remaining_search = min(remaining_search, SEARCH_COUNT)
 
@@ -104,7 +105,7 @@ class NethackActionWrapper(gym.Wrapper):
                 if action == nethack.MiscDirection.WAIT:
                     direction = action
                 else:
-                    direction = nethack.CompassDirection(action)
+                    direction = nethack.CompassDirection(action.action)
 
             index = self.unwrapped.actions.index(action.action)
 
@@ -165,7 +166,7 @@ class NethackActionWrapper(gym.Wrapper):
                     kick_mask[index] = False
 
                 else:
-                    kick_mask[index] = not can_kick[y, x]
+                    kick_mask[index] = can_kick[y, x]
 
         return kick_mask
 
