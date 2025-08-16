@@ -321,11 +321,9 @@ class DungeonLevel:
         dead_end_mask = self._calculate_dead_end_mask()
         self.properties[dead_end_mask] |= self.DEAD_END
 
-        self._stuck_forbid = self._build_stuck_forbid_mask(stuck_boulders, self.glyphs.shape)
-
         self.search_count = prev.search_count if prev else np.zeros_like(self.glyphs, dtype=np.uint8)
         self.search_score = self._compute_search_score()
-        self.wavefront = self._calculate_wavefront()
+        self.wavefront = self._calculate_wavefront(stuck_boulders)
 
     @cached_property
     def pet_mask(self):
@@ -476,7 +474,7 @@ class DungeonLevel:
 
         return forbid
 
-    def _calculate_wavefront(self) -> np.ndarray:
+    def _calculate_wavefront(self, stuck_boulders) -> np.ndarray:
         # pylint: disable=too-many-locals
         wavefront_max = 255
         h, w = self.glyphs.shape
@@ -494,22 +492,22 @@ class DungeonLevel:
         card = ((0,1), (1,0), (0,-1), (-1,0))
         diag = ((1,1), (1,-1), (-1,1), (-1,-1))
 
+        boulder_pos = set()
+        for boulder in stuck_boulders:
+            boulder_pos.add((boulder.player_position, boulder.boulder_position))
+
         while q:
             y, x = q.popleft()
             new_wave = int(wave[y, x]) + 1
 
             # cardinals
-            for dir_idx, (dy, dx) in enumerate(card):
+            for (dy, dx) in card:
                 ny, nx = y + dy, x + dx
                 if 0 <= ny < h and 0 <= nx < w and passable[ny, nx] and wave[ny, nx] > new_wave:
-                    # Respect directed "stuck boulder" constraint:
-                    # if forward P->B is illegal, reverse expansion B->P must be blocked here.
-                    if self._stuck_forbid[y, x, dir_idx]:
-                        continue
-
-                    wave[ny, nx] = new_wave
-                    if new_wave < wavefront_max:
-                        q.append((ny, nx))
+                    if ((y, x), (ny, nx)) not in boulder_pos:
+                        wave[ny, nx] = new_wave
+                        if new_wave < wavefront_max:
+                            q.append((ny, nx))
 
             # diagonals (no diagonal through open doors)
             if not open_doors[y, x]:
@@ -517,9 +515,11 @@ class DungeonLevel:
                     ny, nx = y + +dy, x + dx
                     if (0 <= ny < h and 0 <= nx < w and passable[ny, nx]
                             and not open_doors[ny, nx] and wave[ny, nx] > new_wave):
-                        wave[ny, nx] = new_wave
-                        if new_wave < wavefront_max:
-                            q.append((ny, nx))
+                        if ((y, x), (ny, nx)) in boulder_pos:
+                            wave[ny, nx] = new_wave
+                            if new_wave < wavefront_max:
+                                q.append((ny, nx))
+
         return wave
 
     def _compute_search_score(self, depth=7, half_width=3) -> np.ndarray:
