@@ -385,7 +385,7 @@ class InfoCountsLogger:
                 self._add_boolean("metrics/idle-moves", state.idle_action)
 
             if (total_reward := info.get("total_reward", None)) is not None:
-                self._averages_short.setdefault("metrics/total_reward", []).append(total_reward)
+                self._averages_short.setdefault("rollout/ep_rew_mean", []).append(total_reward)
 
             if (total_steps := info.get("total_steps", None)) is not None:
                 self._averages_short.setdefault("metrics/total_steps", []).append(total_steps)
@@ -583,10 +583,7 @@ def main() -> None:
     device = torch.device(args.device)
 
     # Create vectorized envs
-    if args.num_envs > 1:
-        envs = AsyncVectorEnv([make_env_thunk(args.env_id, args.seed, i) for i in range(args.num_envs)])
-    else:
-        envs = SyncVectorEnv([make_env_thunk(args.env_id, args.seed, 0)])
+    envs = _create_envs(args)
 
     # Reset and get an initial observation to infer shapes
     obs_np, _ = envs.reset()
@@ -636,51 +633,80 @@ def main() -> None:
     progress = tqdm(total=args.total_timesteps)
     while global_step < args.total_timesteps:
         # Collect a rollout of num_steps
-        for _ in range(args.num_steps):
-            global_step += args.num_envs
-            progress.update(args.num_envs)
+        t = 0
+        while t < args.num_steps:
+            try:
+                # Fetch masks (this may also fail if a worker just died)
+                verb_mask_np, dir_mask_np = get_action_masks_batch(envs)  # (B,A), (B,A,9)
 
-            # Fetch masks for each env
-            verb_mask_np, dir_mask_np = get_action_masks_batch(envs)  # (B,A), (B,A,9)
+                # Convert obs + masks to torch
+                obs_t: Dict[str, torch.Tensor] = {k: torch.as_tensor(next_obs[k], device=device)
+                                                for k in next_obs}
+                verb_mask = torch.as_tensor(verb_mask_np, device=device, dtype=torch.bool)
+                dir_mask = torch.as_tensor(dir_mask_np, device=device, dtype=torch.bool)
 
-            # Convert obs + masks to torch
-            obs_t: Dict[str, torch.Tensor] = {k: torch.as_tensor(next_obs[k], device=device) for k in next_obs}
-            verb_mask = torch.as_tensor(verb_mask_np, device=device, dtype=torch.bool)
-            dir_mask = torch.as_tensor(dir_mask_np, device=device, dtype=torch.bool)
+                with torch.no_grad():
+                    act_verb_t, act_dir_t, logprob_t, value_t, _, _ = policy.get_action_and_value(
+                        obs_t, verb_mask, dir_mask, action_verb=None, action_dir=None, deterministic=False
+                    )
+                    act_verb = act_verb_t.cpu().numpy()
+                    act_dir = act_dir_t.cpu().numpy()
+                    logprob = logprob_t.cpu().numpy()
+                    value = value_t.cpu().numpy()
+                    batch_idx = np.arange(args.num_envs)
+                    dir_mask_selected = dir_mask_np[batch_idx, act_verb, :]  # (B,9)
+                    requires_dir = dir_mask_selected.any(axis=1)
 
-            with torch.no_grad():
-                act_verb_t, act_dir_t, logprob_t, value_t, _, _ = policy.get_action_and_value(
-                    obs_t, verb_mask, dir_mask, action_verb=None, action_dir=None, deterministic=False
+                env_actions = pack_action_batch(act_verb, act_dir)
+
+                # ---- The only place we advance counters is AFTER a successful step ----
+                next_obs, rewards, terminations, truncations, infos = envs.step(env_actions)
+
+                global_step += args.num_envs
+                progress.update(args.num_envs)
+
+                dones = np.logical_or(terminations, truncations)
+                rb.add(
+                    obs=obs_np,
+                    action_verb=act_verb,
+                    action_dir=act_dir,
+                    old_logprob=logprob,
+                    value=value,
+                    reward=rewards,
+                    done=dones,
+                    verb_mask=verb_mask_np,
+                    dir_mask_selected=dir_mask_selected,
+                    requires_dir=requires_dir.astype(np.bool_),
                 )
-                act_verb = act_verb_t.cpu().numpy()
-                act_dir = act_dir_t.cpu().numpy()
-                logprob = logprob_t.cpu().numpy()
-                value = value_t.cpu().numpy()
-                batch_idx = np.arange(args.num_envs)
-                dir_mask_selected = dir_mask_np[batch_idx, act_verb, :]  # (B,9)
-                requires_dir = dir_mask_selected.any(axis=1)
 
-            # Step the envs
-            env_actions = pack_action_batch(act_verb, act_dir)
-            next_obs, rewards, terminations, truncations, infos = envs.step(env_actions)
-            dones = np.logical_or(terminations, truncations)
+                # episodic logging (unchanged)
+                if writer is not None and isinstance(infos, list):
+                    for info in infos:
+                        ep = info.get("episode")
+                        if ep is not None:
+                            writer.add_scalar("charts/episodic_return", ep["r"], global_step)
+                            writer.add_scalar("charts/episodic_length", ep["l"], global_step)
 
-            # Bookkeeping
-            rb.add(obs=obs_np, action_verb=act_verb, action_dir=act_dir, old_logprob=logprob, value=value,
-                   reward=rewards, done=dones, verb_mask=verb_mask_np, dir_mask_selected=dir_mask_selected,
-                   requires_dir=requires_dir.astype(np.bool_),
-            )
+                info_logger.on_step(infos)
+                obs_np = next_obs  # store for next add()
+                t += 1  # we successfully collected one step across all envs
 
-            # Logging episodic returns if provided
-            if writer is not None and isinstance(infos, list):
-                for info in infos:
-                    ep = info.get("episode")
-                    if ep is not None:
-                        writer.add_scalar("charts/episodic_return", ep["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", ep["l"], global_step)
+            except (EOFError, BrokenPipeError) as exc:
+                LOG.exception("Vector env step failed (%s). Recovering and restarting rollout...", type(exc).__name__)
+                envs, next_obs = _recover_envs_and_restart_rollout(args, envs)
 
-            info_logger.on_step(infos)
-            obs_np = next_obs  # store for next add()
+                # IMPORTANT: discard current rollout and restart inner loop
+                rb = RolloutBuffer(args.num_steps, args.num_envs, obs_example=next_obs,
+                                num_verbs=num_verbs, device=device)
+                obs_np = next_obs
+                t = 0
+                # Do not touch global_step or progress here; we only advanced them after success.
+                continue
+
+            except Exception as exc:  # If you prefer to catch only env transport errors, remove this.
+                # You may want to re-raise logic/assertion errors to uncover bugs.
+                LOG.exception("Unexpected error during rollout: %s", exc)
+                raise
 
         # Bootstrap value for GAE
         with torch.no_grad():
@@ -781,6 +807,27 @@ def main() -> None:
     progress.close()
     if writer is not None:
         writer.close()
+
+def _recover_envs_and_restart_rollout(args, envs):
+    """Close broken envs, recreate, reset, return (envs, next_obs)."""
+    try:
+        envs.close()
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    # If you want unique RNG streams after a crash, pass a reseed offset into your thunks.
+    # For example, change make_env_thunk to accept seed_offset and do: base_seed + seed_offset + i
+    envs = _create_envs(args)
+    next_obs, _ = envs.reset()
+    LOG.warning("Recovered vector envs. Discarded current rollout.")
+    return envs, next_obs
+
+def _create_envs(args):
+    if args.num_envs > 1:
+        envs = AsyncVectorEnv([make_env_thunk(args.env_id, args.seed, i) for i in range(args.num_envs)])
+    else:
+        envs = SyncVectorEnv([make_env_thunk(args.env_id, args.seed, 0)])
+    return envs
 
 if __name__ == "__main__":
     main()
