@@ -269,10 +269,9 @@ class DungeonLevel:
     UNSEEN_STONE = _bit(GLYPH_TABLE.UNUSED_BIT)
     VISITED = _bit(GLYPH_TABLE.UNUSED_BIT + 1)
     FRONTIER = _bit(GLYPH_TABLE.UNUSED_BIT + 2)
-    TARGET = _bit(GLYPH_TABLE.UNUSED_BIT + 3)
-    LOCKED_DOOR = _bit(GLYPH_TABLE.UNUSED_BIT + 4)
-    WALLS_ADJACENT = _bit(GLYPH_TABLE.UNUSED_BIT + 5)
-    DEAD_END = _bit(GLYPH_TABLE.UNUSED_BIT + 6)
+    LOCKED_DOOR = _bit(GLYPH_TABLE.UNUSED_BIT + 3)
+    WALLS_ADJACENT = _bit(GLYPH_TABLE.UNUSED_BIT + 4)
+    DEAD_END = _bit(GLYPH_TABLE.UNUSED_BIT + 5)
 
     def __init__(self, glyphs: np.ndarray, stuck_boulders, locked, prev : 'DungeonLevel' = None):
         self.glyphs = glyphs
@@ -314,9 +313,6 @@ class DungeonLevel:
 
         frontier_mask = self._calculate_frontier_mask()
         self.properties[frontier_mask] |= self.FRONTIER
-
-        target_mask = self._get_target_mask()
-        self.properties[target_mask] |= self.TARGET
 
         dead_end_mask = self._calculate_dead_end_mask()
         self.properties[dead_end_mask] |= self.DEAD_END
@@ -457,6 +453,19 @@ class DungeonLevel:
 
         target_mask &= ~self.stone_mask
         target_mask &= self.passable
+
+        if not target_mask.any():
+            target_mask |= self.search_score > 0.7
+            target_mask &= self.passable
+
+        if not target_mask.any():
+            target_mask |= self.search_score > 0.5
+            target_mask &= self.passable
+
+        if not target_mask.any():
+            target_mask |= self.search_score > 0.2
+            target_mask &= self.passable
+
         return target_mask
 
     def _calculate_wavefront(self, stuck_boulders) -> np.ndarray:
@@ -466,7 +475,7 @@ class DungeonLevel:
         wave = np.full((h, w), wavefront_max, dtype=np.uint8)
 
         passable = self.passable
-        targets  = (self.properties & self.TARGET) != 0
+        targets = self._get_target_mask()
         q = deque()
 
         ys, xs = np.nonzero(targets & passable)
