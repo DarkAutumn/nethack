@@ -19,7 +19,7 @@ from typing import Dict, Optional, List, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 import numpy as np
-3
+
 from yndf.nethack_level import GLYPH_TABLE, DungeonLevel
 from yndf.nethack_state import NethackState
 
@@ -544,10 +544,10 @@ if __name__ == '__main__':
             frame.glyphs = [[0]*79 for _ in range(21)]
 
             if self.steps < 50:
-                return StepInfo(frame, 'S', 0.0, [], {"Actions": [], "Disallowed": []})
+                return StepInfo(frame, 'S', 0.0, [], {"Actions": [], "Disallowed": []}, {})
             if self.steps < 55:
-                return StepInfo(frame, 'N', 0.1, [('test', 0.1)], {"Actions": [], "Disallowed": []})
-            return StepInfo(frame, 'S', 1.0, [('test', 1.0)], {"Actions": [], "Disallowed": []}, ending='DemoEnd')
+                return StepInfo(frame, 'N', 0.1, [('test', 0.1)], {"Actions": [], "Disallowed": []}, {})
+            return StepInfo(frame, 'S', 1.0, [('test', 1.0)], {"Actions": [], "Disallowed": []}, {}, ending='DemoEnd')
 
         def set_model(self, model_path: str) -> None:
             print(f"Model set to: {model_path}")

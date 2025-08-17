@@ -28,7 +28,10 @@ def create_env(**kwargs) -> gym.Env:
 
 gym.register(id="YenderFlow-v0", entry_point="yndf:create_env")
 
+GLYPH_MAX = nle.nethack.NO_GLYPH # pylint: disable=no-member
+
 __all__ = [
     NethackState.__name__,
     NethackMaskablePolicy.__name__,
+    GLYPH_MAX.__name__,
     ]

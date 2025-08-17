@@ -16,7 +16,6 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from tqdm import tqdm
-from nle import nethack
 
 import yndf
 from models import NethackPolicy
@@ -592,7 +591,7 @@ def main() -> None:
     num_directions = dir_mask_np.shape[2]
     LOG.info("Num verbs: %d, Directions: %d", num_verbs, num_directions)
 
-    policy = NethackPolicy(num_verbs=num_verbs, glyph_vocab_size=nethack.NO_GLYPH).to(device)
+    policy = NethackPolicy(num_verbs=num_verbs, glyph_vocab_size=yndf.GLYPH_MAX).to(device)
     optimizer = optim.Adam(policy.parameters(), lr=args.learning_rate, eps=1e-5)
 
     writer: SummaryWriter | None = None
@@ -608,7 +607,7 @@ def main() -> None:
     args.num_minibatches = num_minibatches
 
     LOG.info(
-        "Invariant batch config: target=%d -> actual=%d = %d envs × %d steps; "
+        "Invariant batch config: target=%d -> actual=%d = %d envs * %d steps; "
         "minibatch_size=%d; num_minibatches=%d",
         batch_target, batch_actual, args.num_envs, args.num_steps, mb_size, args.num_minibatches
     )
@@ -763,7 +762,7 @@ def main() -> None:
                 v_loss_unclipped = (new_value - mb_returns) ** 2
                 v_clipped = mb_values + torch.clamp(new_value - mb_values, -args.clip_coef, args.clip_coef)
                 v_loss_clipped = (v_clipped - mb_returns) ** 2
-                v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+                v_loss = torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
                 # Entropy bonuses
                 # Average dir entropy over samples that required a dir
