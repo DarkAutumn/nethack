@@ -81,6 +81,8 @@ class NethackActionWrapper(gym.Wrapper):
 
         obs, reward, terminated, truncated, info = self.env.step(index)
         state = info["state"]
+        if "yn" in state.message:
+            self.unwrapped.nethack.step(ord('n'))
 
         if verb == nethack.Command.SEARCH:
             state.floor.search_count[self._state.player.position] += state.time - self._state.time
