@@ -150,7 +150,7 @@ class NethackActionWrapper(gym.Wrapper):
         """Return the kick mask for the current state."""
         # don't allow kicking pets, walls, or open air
         floor = self._state.floor
-        can_kick = ~(floor.barrier_mask | floor.pet_mask) & (floor.objects | floor.enemies | floor.corpses)
+        can_kick = floor.objects | floor.enemies | floor.corpses | floor.closed_doors
 
         kick_mask = np.zeros((len(DIRECTIONS),), dtype=bool)
         for index, direction in enumerate(DIRECTIONS):
