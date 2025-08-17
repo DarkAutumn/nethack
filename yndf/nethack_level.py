@@ -78,7 +78,7 @@ class GlyphLookupTable:
     PASSABLE = _bit(14)
     DESCEND_LOCATION = _bit(15)
     WALL = _bit(16)
-    FLOOR = _bit(17)
+    DUNGEON_FLOOR = _bit(17)
     CORRIDOR = _bit(18)
     OPEN_DOOR = _bit(19)
     CLOSED_DOOR = _bit(20)
@@ -87,7 +87,7 @@ class GlyphLookupTable:
 
     UNUSED_BIT = 23
 
-    FLOOR_MASK = CMAP | WALL | FLOOR | CORRIDOR | OPEN_DOOR | CLOSED_DOOR | DESCEND_LOCATION | TRAP
+    FLOOR_MASK = CMAP | WALL | DUNGEON_FLOOR | CORRIDOR | OPEN_DOOR | CLOSED_DOOR | DESCEND_LOCATION | TRAP
 
     OVERLAY_MASK = MONSTER | NORMAL_MONSTER | PET | RIDDEN_MONSTER | DETECTED_MONSTER | INVISIBLE | BODY | OBJECT \
                     | STATUE | SWALLOW | WARNING | PLAYER
@@ -113,7 +113,7 @@ class GlyphLookupTable:
                 properties |= self.DESCEND_LOCATION
 
             if glyph in floor_glyphs:
-                properties |= self.FLOOR
+                properties |= self.DUNGEON_FLOOR
 
             if glyph in corridor_glyphs:
                 properties |= self.CORRIDOR
@@ -326,6 +326,11 @@ class DungeonLevel:
         self.wavefront = self._calculate_wavefront(stuck_boulders)
 
     @cached_property
+    def dungeon_floor(self) -> np.ndarray:
+        """Mask for all floor tiles on the level."""
+        return (self.properties & GLYPH_TABLE.DUNGEON_FLOOR) != 0
+
+    @cached_property
     def pet_mask(self):
         """Mask for all pet tiles on the level."""
         return (self.properties & GLYPH_TABLE.PET) != 0
@@ -371,6 +376,20 @@ class DungeonLevel:
         return self.wall_mask | self.stone_mask
 
     @cached_property
+    def enemies(self):
+        """Returns unallied monsters."""
+        return (self.properties & (GLYPH_TABLE.MONSTER | GLYPH_TABLE.PET)) == GLYPH_TABLE.MONSTER
+
+    @cached_property
+    def objects(self):
+        """All objects on the floor."""
+        return (self.properties & GLYPH_TABLE.OBJECT) != 0
+
+    @cached_property
+    def corpses(self):
+        return (self.properties & GLYPH_TABLE.BODY) != 0
+
+    @cached_property
     def visited_mask(self):
         """Mask for all visited tiles on the level."""
         return (self.properties & self.VISITED) != 0
@@ -378,8 +397,7 @@ class DungeonLevel:
     @cached_property
     def num_enemies(self):
         """Count of visible enemies on the level."""
-        enemies = (self.properties & (GLYPH_TABLE.MONSTER | GLYPH_TABLE.PET)) == GLYPH_TABLE.MONSTER
-        return np.sum(enemies)
+        return np.sum(self.enemies)
 
     def _calculate_walls_adjacent_mask(self) -> np.ndarray:
         barrier = self.barrier_mask
@@ -432,47 +450,14 @@ class DungeonLevel:
         target_mask = interesting_objects | frontier
 
         # Only push to exits if we don't have any interesting objects or unexplored rooms
-        open_doors_or_floors = (self.properties & (GLYPH_TABLE.OPEN_DOOR | GLYPH_TABLE.FLOOR)) != 0
+        open_doors_or_floors = self.open_doors | self.dungeon_floor
         interesting_frontier = frontier & open_doors_or_floors
         if not interesting_frontier.any():
             target_mask |= self.exits
 
         target_mask &= ~self.stone_mask
+        target_mask &= self.passable
         return target_mask
-
-    def _build_stuck_forbid_mask(self, stuck_boulders, shape):
-        """
-        Build a boolean mask forbid[y, x, d] where d is a cardinal direction index.
-        If True, the reverse-BFS wavefront must NOT expand from (y,x) to the
-        neighbor in direction d.
-
-        We store the *reverse* of your input pairs because wavefront expands
-        from targets outward: if forward move P->B is illegal, we must forbid
-        reverse expansion B->P during BFS.
-        """
-        h, w = shape
-        # Direction order matches the 'card' tuple in _calculate_wavefront.
-        # card = ((0,1), (1,0), (0,-1), (-1,0))  ->  E, S, W, N
-        dir_to_idx = {(0, 1): 0, (1, 0): 1, (0, -1): 2, (-1, 0): 3}
-        forbid = np.zeros((h, w, 4), dtype=bool)
-
-        if not stuck_boulders:
-            return forbid
-
-        for sb in stuck_boulders:
-            py, px = sb.player_position
-            by, bx = sb.boulder_position
-
-            dy, dx = (py - by), (px - bx)  # direction from boulder -> player (reverse edge)
-            idx = dir_to_idx.get((dy, dx))
-            if idx is None:
-                # Not cardinal-adjacent; ignore quietly (or assert if you prefer)
-                continue
-
-            if 0 <= by < h and 0 <= bx < w and 0 <= py < h and 0 <= px < w:
-                forbid[by, bx, idx] = True
-
-        return forbid
 
     def _calculate_wavefront(self, stuck_boulders) -> np.ndarray:
         # pylint: disable=too-many-locals
@@ -494,7 +479,7 @@ class DungeonLevel:
 
         boulder_pos = set()
         for boulder in stuck_boulders:
-            boulder_pos.add((boulder.player_position, boulder.boulder_position))
+            boulder_pos.add((boulder.boulder_position, boulder.player_position))
 
         while q:
             y, x = q.popleft()
@@ -504,7 +489,8 @@ class DungeonLevel:
             for (dy, dx) in card:
                 ny, nx = y + dy, x + dx
                 if 0 <= ny < h and 0 <= nx < w and passable[ny, nx] and wave[ny, nx] > new_wave:
-                    if ((y, x), (ny, nx)) not in boulder_pos:
+                    key = ((y, x), (ny, nx))
+                    if key not in boulder_pos:
                         wave[ny, nx] = new_wave
                         if new_wave < wavefront_max:
                             q.append((ny, nx))
@@ -530,7 +516,7 @@ class DungeonLevel:
         dead_end = (props & self.DEAD_END) != 0
         passable = self.passable
         corridor = (props & GLYPH_TABLE.CORRIDOR) != 0
-        floor    = (props & GLYPH_TABLE.FLOOR)    != 0
+        floor    = self.dungeon_floor
         wall     = self.wall_mask
         has_adj_wall = (props & self.WALLS_ADJACENT) != 0
         barrier  = wall | self.stone_mask

@@ -67,7 +67,7 @@ class NethackObsWrapper(gym.Wrapper):
         fields = np.zeros((MAX_FIELD,), dtype=np.float32)
 
         fields[FIELD_ENEMIES_PRESENT] = 1.0 if floor.num_enemies > 0 else 0.0
-        fields[FIELD_IN_ROOM] = 1.0 if floor.properties[state.player.position] & GlyphLookupTable.FLOOR else 0.0
+        fields[FIELD_IN_ROOM] = 1.0 if floor.properties[state.player.position] & GlyphLookupTable.DUNGEON_FLOOR else 0.0
         fields[FIELD_IN_CORRIDOR] = 1.0 if floor.properties[state.player.position] & GlyphLookupTable.CORRIDOR else 0.0
         fields[FIELD_AT_DEAD_END] = 1.0 if floor.properties[state.player.position] & floor.DEAD_END else 0.0
 
