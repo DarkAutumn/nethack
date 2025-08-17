@@ -71,6 +71,8 @@ class Controller(yndf.gui.NethackController):
         if ending is not None:
             assert terminated or truncated, "Episode should end if an ending is provided."
 
+        action_mask = self.action_masker.action_masks()
+        verb_mask, dir_mask = action_mask
         available_actions = []
         masked_actions = []
 
