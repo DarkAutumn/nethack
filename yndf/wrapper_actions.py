@@ -201,8 +201,8 @@ class NethackActionWrapper(gym.Wrapper):
             return False
 
         # Allow movement into closed doors that aren't locked.
-        if floor.closed_doors[ny, nx] and not floor.locked_doors[ny, nx]:
-            return True
+        if floor.closed_doors[ny, nx]:
+            return not floor.locked_doors[ny, nx]
 
         # Otherwise, check if the tile is passable.
         return floor.passable[ny, nx]
