@@ -305,6 +305,8 @@ class DungeonLevel:
         barrier = self.barrier_mask
         self.properties[passable & barrier] &= ~GLYPH_TABLE.PASSABLE
 
+        self._demote_immovable_boulders(stuck_boulders)
+
         walls_adjacent = self._calculate_walls_adjacent_mask()
         self.properties[walls_adjacent] |= self.WALLS_ADJACENT
 
@@ -712,3 +714,77 @@ class DungeonLevel:
 
         max_adjacent = np.maximum.reduce([north, south, west, east])
         return max_adjacent
+
+    def _blocked_push_grid(self, stuck_boulders) -> np.ndarray:
+        """
+        blocked[y, x, k] == True if entering the boulder at (y,x) from neighbor
+        direction k is blocked by a known stuck-boulder constraint.
+
+        k index is by delta (neighbor -> boulder):
+          0:(+1, 0) from North
+          1:( 0,-1) from East
+          2:(-1, 0) from South
+          3:( 0,+1) from West
+          4:(+1,+1) from North-West
+          5:(+1,-1) from North-East
+          6:(-1,-1) from South-East
+          7:(-1,+1) from South-West
+        """
+        h, w = self.glyphs.shape
+        blocked = np.zeros((h, w, 8), dtype=bool)
+        if not stuck_boulders:
+            return blocked
+
+        delta_to_idx = {
+            ( 1, 0): 0, ( 0,-1): 1, (-1, 0): 2, ( 0, 1): 3,
+            ( 1, 1): 4, ( 1,-1): 5, (-1,-1): 6, (-1, 1): 7,
+        }
+
+        for sb in stuck_boulders:
+            by, bx = sb.boulder_position
+            py, px = sb.player_position
+
+            dy, dx = by - py, bx - px  # neighbor -> boulder
+            idx = delta_to_idx.get((dy, dx))
+            if idx is None:
+                continue
+            if 0 <= by < h and 0 <= bx < w:
+                blocked[by, bx, idx] = True
+        return blocked
+
+    def _demote_immovable_boulders(self, stuck_boulders) -> None:
+        """Clear PASSABLE on boulders that cannot be entered from any adjacent passable tile (8-dir) given stuck_boulders."""
+        props = self.properties
+        boulder_mask = (self.glyphs == BOULDER_GLYPH)
+        if not np.any(boulder_mask):
+            return
+
+        passable = (props & GLYPH_TABLE.PASSABLE) != 0
+
+        # Neighbor passability aligned onto the boulder cell
+        pass_n  = _shift_n(passable)
+        pass_e  = _shift_e(passable)
+        pass_s  = _shift_s(passable)
+        pass_w  = _shift_w(passable)
+        pass_nw = _shift_nw(passable)
+        pass_ne = _shift_ne(passable)
+        pass_se = _shift_se(passable)
+        pass_sw = _shift_sw(passable)
+
+        blocked = self._blocked_push_grid(stuck_boulders)
+
+        # Indices match _blocked_push_grid doc
+        can_from_n  = pass_n  & ~blocked[:, :, 0]  # (+1, 0)
+        can_from_e  = pass_e  & ~blocked[:, :, 1]  # ( 0,-1)
+        can_from_s  = pass_s  & ~blocked[:, :, 2]  # (-1, 0)
+        can_from_w  = pass_w  & ~blocked[:, :, 3]  # ( 0, 1)
+        can_from_nw = pass_nw & ~blocked[:, :, 4]  # (+1,+1)
+        can_from_ne = pass_ne & ~blocked[:, :, 5]  # (+1,-1)
+        can_from_se = pass_se & ~blocked[:, :, 6]  # (-1,-1)
+        can_from_sw = pass_sw & ~blocked[:, :, 7]  # (-1,+1)
+
+        movable = (can_from_n | can_from_e | can_from_s | can_from_w |
+                   can_from_nw | can_from_ne | can_from_se | can_from_sw)
+
+        immovable = boulder_mask & ~movable
+        props[immovable] &= ~GLYPH_TABLE.PASSABLE
