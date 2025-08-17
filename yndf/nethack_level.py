@@ -459,14 +459,17 @@ class DungeonLevel:
 
         if not target_mask.any():
             target_mask |= self.search_score > 0.7
+            target_mask &= self.search_count < 22
             target_mask &= self.passable
 
         if not target_mask.any():
             target_mask |= self.search_score > 0.5
+            target_mask &= self.search_count < 22
             target_mask &= self.passable
 
         if not target_mask.any():
             target_mask |= self.search_score > 0.2
+            target_mask &= self.search_count < 22
             target_mask &= self.passable
 
         return target_mask
