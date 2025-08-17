@@ -443,7 +443,7 @@ class DungeonLevel:
         boulders = (self.glyphs == BOULDER_GLYPH)
 
         interesting_objects = ~self.visited_mask & objects & self.passable & ~boulders
-        max_search_score = self.search_score >= 0.9
+        max_search_score = (self.search_score >= 0.9) & (self.search_count < 22)
 
         frontier = (self.properties & self.FRONTIER) != 0
         target_mask = interesting_objects | max_search_score | frontier
