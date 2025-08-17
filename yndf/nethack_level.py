@@ -443,9 +443,10 @@ class DungeonLevel:
         boulders = (self.glyphs == BOULDER_GLYPH)
 
         interesting_objects = ~self.visited_mask & objects & self.passable & ~boulders
+        max_search_score = self.search_score >= 0.9
 
         frontier = (self.properties & self.FRONTIER) != 0
-        target_mask = interesting_objects | frontier
+        target_mask = interesting_objects | max_search_score | frontier
 
         # Only push to exits if we don't have any interesting objects or unexplored rooms
         open_doors_or_floors = self.open_doors | self.dungeon_floor

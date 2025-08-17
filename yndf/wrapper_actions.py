@@ -212,13 +212,16 @@ class NethackActionWrapper(gym.Wrapper):
         floor = state.floor
         pos = state.player.position
 
-        if floor.wavefront[pos] <= 2:
-            return False
-
         if floor.search_count[pos] >= 22:
             return False
 
+        if floor.search_score[pos] >= 0.9:
+            return True
+
         if floor.search_score[pos] < 0.2:
+            return False
+
+        if floor.wavefront[pos] <= 2:
             return False
 
         if (floor.properties[pos] & DungeonLevel.WALLS_ADJACENT) == 0:
