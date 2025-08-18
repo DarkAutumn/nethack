@@ -58,7 +58,7 @@ class NethackController:
         """Take a step in the simulation."""
         raise NotImplementedError
 
-    def set_model(self, model_path: str) -> None:
+    def set_model(self, model_path: str, device: Optional[str] = None) -> None:
         """Set the current model path for the controller."""
         raise NotImplementedError
 
@@ -549,7 +549,7 @@ if __name__ == '__main__':
                 return StepInfo(frame, 'N', 0.1, [('test', 0.1)], {"Actions": [], "Disallowed": []}, {})
             return StepInfo(frame, 'S', 1.0, [('test', 1.0)], {"Actions": [], "Disallowed": []}, {}, ending='DemoEnd')
 
-        def set_model(self, model_path: str) -> None:
+        def set_model(self, model_path: str, device = None) -> None:
             print(f"Model set to: {model_path}")
 
     run_gui(DemoCtrl(), model_path="models/")

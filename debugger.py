@@ -1,15 +1,14 @@
 # debugger.py
 import argparse
+from typing import Optional
 import gymnasium as gym
-import torch
 from nle import nethack
-from models import NethackPolicy
+from models import load_model
 import yndf.gui
 from yndf.wrapper_actions import DIRECTIONS, VERBS
 
 from yndf.wrapper_actions import UserInputAction
 from yndf.wrapper_rewards import NethackRewardWrapper
-from ppo_train import ModelSaver
 
 
 def _get_action_masker(env: gym.Env) -> gym.Wrapper:
@@ -30,7 +29,6 @@ def _get_ending_handler(env: gym.Env):
         else:
             raise ValueError("Environment does not support endings.")
     return ending_handler
-
 
 class Controller(yndf.gui.NethackController):
     """A controller for the YenderFlow GUI debugger."""
@@ -106,18 +104,8 @@ class Controller(yndf.gui.NethackController):
             state, action, action_name, reward, list(info.get("rewards", {}).items()), properties, ending
         )
 
-    def set_model(self, model_path: str) -> None:
-        """
-        Load a saved model (your custom checkpoint) and wrap it for inference.
-        You provide how to build the policy from saved args + current env spaces.
-        """
-        def policy_builder(_: dict) -> torch.nn.Module:
-            # pylint: disable=no-member
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            return NethackPolicy(num_verbs=len(VERBS), glyph_vocab_size=nethack.NO_GLYPH).to(device)
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = ModelSaver.load_as_inference(model_path, policy_builder, device=device)
+    def set_model(self, model_path: str, device: Optional[str] = None) -> None:
+        self.model = load_model(model_path, device)
 
 
 def main():

@@ -28,5 +28,14 @@
             "console": "integratedTerminal",
             "justMyCode": false
         },
+        {
+            "name": "Evaluate Debugger",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "evaluate.py",
+            "args": ["models/nethack.zip"],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
     ]
 }

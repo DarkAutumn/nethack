@@ -1,10 +1,17 @@
-from typing import Dict, Optional, Tuple
+import random
+import time
+from typing import Any, Callable, Dict, Optional, Tuple
 
+from dataclasses import asdict
+from pathlib import Path
+
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
 
-from yndf.wrapper_actions import DIRECTIONS
+from yndf import GLYPH_MAX
+from yndf.wrapper_actions import DIRECTIONS, VERBS
 
 DIRECTION_COUNT = len(DIRECTIONS)
 
@@ -359,3 +366,135 @@ class NethackPolicy(nn.Module):
         per_verb_dir_probs = per_verb_dir_probs * requires_dir_per_verb.unsqueeze(-1).float()
 
         return per_verb_probs, per_verb_dir_probs, requires_dir_per_verb
+
+
+# -------------------------
+# SB3-callback compatibility adapters
+# -------------------------
+
+class ModelSaver:
+    """
+    Minimal object that exposes the attributes SB3 callbacks expect:
+    - num_timesteps
+    - save(path)
+    - logger  (not used here)
+    """
+    def __init__(self, policy: nn.Module, optimizer, args_obj, get_step: Callable[[], int]):
+        self._policy = policy
+        self._optimizer = optimizer
+        self._args = args_obj
+        self._get_step = get_step
+
+    @property
+    def num_timesteps(self) -> int:
+        """Number of timesteps."""
+        return int(self._get_step())
+
+    def save(self, path: str) -> None:
+        """Save training state to the given path (extension can be .zip/.pt/etc.)."""
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "policy_state_dict": self._policy.state_dict(),
+            "optimizer_state_dict": self._optimizer.state_dict(),
+            "args": asdict(self._args),
+            "num_timesteps": self.num_timesteps,
+            "timestamp": int(time.time()),
+            "rng_state": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state().tolist(),
+                "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            },
+        }
+
+        torch.save(state, str(p))
+
+    @staticmethod
+    def load_checkpoint(path: str, device: str | torch.device = "cpu") -> dict[str, Any]:
+        """Low-level: just read the checkpoint dict."""
+        return torch.load(path, map_location=device)
+
+    @staticmethod
+    def load_as_inference(path: str, policy_builder: Callable[[dict[str, Any]], nn.Module],
+                          device: str | torch.device = "cpu") -> "InferenceAdapter":
+        """
+        High-level: build a policy via `policy_builder(args_dict)`,
+        load weights, and wrap with an SB3-like .predict().
+        """
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+        args_dict: dict[str, Any] = ckpt.get("args", {})
+        policy = policy_builder(args_dict).to(device)
+        policy.load_state_dict(ckpt["policy_state_dict"])
+        policy.eval()
+        return InferenceAdapter(policy, device=device)
+
+
+class InferenceAdapter:
+    """SB3-like wrapper: exposes .predict(obs, deterministic=False, action_masks=None).
+    If your policy has .act(obs, action_mask=..., deterministic=...), that's used.
+    Otherwise we assume policy(obs) -> logits for a Discrete action space.
+    """
+    def __init__(self, policy: nn.Module, device: str | torch.device = "cpu") -> None:
+        self.policy = policy
+        self.device = torch.device(device)
+
+    @staticmethod
+    def _to_tensor(x: Any, device: torch.device, unsqueeze: bool = False) -> Any:
+        """Recursively move obs/masks to a torch tensor on device."""
+
+        result = None
+        if torch.is_tensor(x):
+            result = x.to(device)
+            if unsqueeze:
+                result = result.unsqueeze(0)
+        elif isinstance(x, np.ndarray):
+            result = torch.from_numpy(x).to(device)
+            if unsqueeze:
+                result = result.unsqueeze(0)
+        elif isinstance(x, (list, tuple)):
+            result = type(x)(InferenceAdapter._to_tensor(v, device, unsqueeze=unsqueeze) for v in x)
+        elif isinstance(x, dict):
+            result = {k: InferenceAdapter._to_tensor(v, device, unsqueeze=unsqueeze) for k, v in x.items()}
+        else:
+            result = torch.as_tensor(x, device=device)
+            if unsqueeze:
+                result = result.unsqueeze(0)
+
+        return result
+
+    @torch.inference_mode()
+    def predict(self, obs: Any, deterministic: bool, action_masks : Tuple[torch.tensor, torch.tensor], unsqueeze):
+        """Mimics stable baselines behavior."""
+        obs_t = InferenceAdapter._to_tensor(obs, self.device, unsqueeze)
+
+        verb_mask_t: Optional[torch.Tensor] = None
+        dir_mask_t: Optional[torch.Tensor] = None
+        if action_masks is not None:
+            verb_mask_t, dir_mask_t = action_masks
+            verb_mask_t = InferenceAdapter._to_tensor(verb_mask_t, self.device, unsqueeze)
+            dir_mask_t = InferenceAdapter._to_tensor(dir_mask_t, self.device, unsqueeze)
+
+        act_verb_t, act_dir_t, _, _, _, _ = self.policy.get_action_and_value(
+            obs_t,
+            verb_mask_t,
+            dir_mask_t,
+            action_verb=None,
+            action_dir=None,
+            deterministic=deterministic,
+        )
+
+        act_verb = act_verb_t.detach().cpu().item()
+        act_dir = act_dir_t.detach().cpu().item()
+
+        return (act_verb, act_dir), None
+
+
+def load_model(model_path, device = None):
+    """Loads a model with a stable-baselines like interface."""
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    def policy_builder(_: dict) -> torch.nn.Module:
+        # pylint: disable=no-member
+        return NethackPolicy(num_verbs=len(VERBS), glyph_vocab_size=GLYPH_MAX).to(device)
+
+    return ModelSaver.load_as_inference(model_path, policy_builder, device=device)
