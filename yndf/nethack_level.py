@@ -385,6 +385,7 @@ class DungeonLevel:
 
     @cached_property
     def corpses(self):
+        """Mask for all body (corpse) tiles on the level."""
         return (self.properties & GLYPH_TABLE.BODY) != 0
 
     @cached_property
@@ -440,7 +441,7 @@ class DungeonLevel:
     def _get_target_mask(self):
         """Calculate the wavefront targets for the current state."""
         objects = (self.properties & GLYPH_TABLE.OBJECT) != 0
-        boulders = (self.glyphs == BOULDER_GLYPH)
+        boulders = self.glyphs == BOULDER_GLYPH
 
         interesting_objects = ~self.visited_mask & objects & self.passable & ~boulders
         max_search_score = (self.search_score >= 0.9) & (self.search_count < 22)
@@ -757,9 +758,10 @@ class DungeonLevel:
         return blocked
 
     def _demote_immovable_boulders(self, stuck_boulders) -> None:
-        """Clear PASSABLE on boulders that cannot be entered from any adjacent passable tile (8-dir) given stuck_boulders."""
+        """Clear PASSABLE on boulders that cannot be entered from any adjacent passable tile (8-dir) given
+        stuck_boulders."""
         props = self.properties
-        boulder_mask = (self.glyphs == BOULDER_GLYPH)
+        boulder_mask = self.glyphs == BOULDER_GLYPH
         if not np.any(boulder_mask):
             return
 

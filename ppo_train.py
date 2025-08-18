@@ -32,16 +32,19 @@ LOG = logging.getLogger("ppo_train")
 # Utilities / Helpers
 # -------------------------
 
-def set_seed(seed: int) -> None:
+def _set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-def make_env_thunk(env_id: str, seed: int, idx: int) -> Any:
+def _make_env_thunk(env_id: str, seed: int, idx: int) -> Any:
     def _thunk() -> gym.Env:
         env = gym.make(env_id)
-        env.reset(seed=seed + idx)
+        if seed is not None:
+            env.reset(seed=seed + idx)
+        else:
+            env.reset()
         return env
     return _thunk
 
@@ -84,6 +87,7 @@ def derive_invariant_batch(args: 'PPOArgs') -> tuple[int, int, int, int, int]:
 
 @dataclass
 class RolloutBatch:
+    """A batch of rollouts for training."""
     obs: Dict[str, torch.Tensor]          # dict of tensors, flattened (T*B,...)
     action_verb: torch.Tensor             # (T*B,)
     action_dir: torch.Tensor              # (T*B,)
@@ -96,7 +100,9 @@ class RolloutBatch:
     requires_dir: torch.Tensor            # (T*B,) bool
 
 class RolloutBuffer:
-    def __init__(self, num_steps: int, num_envs: int, obs_example: Dict[str, np.ndarray], num_verbs: int, device: torch.device) -> None:
+    """A buffer to store rollouts for training."""
+    def __init__(self, num_steps: int, num_envs: int, obs_example: Dict[str, np.ndarray], num_verbs: int,
+                 device: torch.device) -> None:
         self.num_steps = num_steps
         self.num_envs = num_envs
         self.device = device
@@ -115,19 +121,10 @@ class RolloutBuffer:
         self._advantages_np = None
         self._returns_np = None
 
-    def add(
-        self,
-        obs: Dict[str, np.ndarray],
-        action_verb: np.ndarray,
-        action_dir: np.ndarray,
-        old_logprob: np.ndarray,
-        value: np.ndarray,
-        reward: np.ndarray,
-        done: np.ndarray,
-        verb_mask: np.ndarray,            # (B,A)
-        dir_mask_selected: np.ndarray,    # (B,9)
-        requires_dir: np.ndarray,         # (B,)
-    ) -> None:
+    def add(self, obs: Dict[str, np.ndarray], action_verb: np.ndarray, action_dir: np.ndarray, old_logprob: np.ndarray,
+            value: np.ndarray, reward: np.ndarray, done: np.ndarray, verb_mask: np.ndarray,
+            dir_mask_selected: np.ndarray, requires_dir: np.ndarray) -> None:
+        """Add a rollout step to the buffer."""
         for k, v in obs.items():
             self.obs[k].append(np.asarray(v))
         self.action_verb.append(np.asarray(action_verb))
@@ -141,32 +138,37 @@ class RolloutBuffer:
         self.requires_dir.append(np.asarray(requires_dir))
 
     def compute_gae(self, last_value: np.ndarray, gamma: float, gae_lambda: float) -> Tuple[np.ndarray, np.ndarray]:
-        T = len(self.rewards)
-        B = self.rewards[0].shape[0]
-        advantages = np.zeros((T, B), dtype=np.float32)
-        lastgaelam = np.zeros((B,), dtype=np.float32)
-        for t in reversed(range(T)):
+        """Compute generalized advantage estimation (GAE)."""
+        t = len(self.rewards)
+        b = self.rewards[0].shape[0]
+        advantages = np.zeros((t, b), dtype=np.float32)
+        lastgaelam = np.zeros((b,), dtype=np.float32)
+        for t in reversed(range(t)):
             nextnonterminal = 1.0 - self.dones[t].astype(np.float32)
-            next_values = last_value if t == T - 1 else self.value[t + 1]
-            delta = self.rewards[t].astype(np.float32) + gamma * next_values * nextnonterminal - self.value[t].astype(np.float32)
+            next_values = last_value if t == t - 1 else self.value[t + 1]
+            float_rewards = self.rewards[t].astype(np.float32)
+            delta = float_rewards + gamma * next_values * nextnonterminal - self.value[t].astype(np.float32)
             lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
             advantages[t] = lastgaelam
+
         returns = advantages + np.asarray(self.value, dtype=np.float32)
-        return advantages, returns
+        self._advantages_np = advantages
+        self._returns_np = returns
 
     def to_batches(self) -> RolloutBatch:
+        """Convert the rollout buffer to a batch."""
         def _stack_flat(key: str) -> torch.Tensor:
             arr = np.stack(self.obs[key], axis=0)  # (T,B,...)
-            T, B = arr.shape[:2]
-            arr = arr.reshape(T * B, *arr.shape[2:])
+            t, b = arr.shape[:2]
+            arr = arr.reshape(t * b, *arr.shape[2:])
             return torch.as_tensor(arr, device=self.device)
 
         obs_torch: Dict[str, torch.Tensor] = {k: _stack_flat(k) for k in self.obs.keys()}
 
         def _stack1(lst: List[np.ndarray]) -> torch.Tensor:
             arr = np.stack(lst, axis=0)  # (T,B,...)
-            T, B = arr.shape[:2]
-            arr = arr.reshape(T * B, *arr.shape[2:])
+            t, b = arr.shape[:2]
+            arr = arr.reshape(t * b, *arr.shape[2:])
             return torch.as_tensor(arr, device=self.device)
 
         action_verb = _stack1(self.action_verb).long()
@@ -183,28 +185,13 @@ class RolloutBuffer:
         dir_mask_selected = _stack1(self.dir_mask_selected).bool()
         requires_dir = _stack1(self.requires_dir).bool().squeeze(-1)
 
-        return RolloutBatch(
-            obs=obs_torch,
-            action_verb=action_verb,
-            action_dir=action_dir,
-            old_logprob=old_logprob,
-            value=value,
-            advantages=advantages,
-            returns=returns,
-            verb_mask=verb_mask,
-            dir_mask_selected=dir_mask_selected,
-            requires_dir=requires_dir,
-        )
-
-    def set_advantages_returns(self, advantages: np.ndarray, returns: np.ndarray) -> None:
-        self._advantages_np = advantages  # (T,B)
-        self._returns_np = returns        # (T,B)
+        return RolloutBatch(obs=obs_torch, action_verb=action_verb, action_dir=action_dir, old_logprob=old_logprob,
+                            value=value, advantages=advantages, returns=returns, verb_mask=verb_mask,
+                            dir_mask_selected=dir_mask_selected, requires_dir=requires_dir)
 
 # -------------------------
 # SB3-callback compatibility adapters
 # -------------------------
-
-
 
 class ModelSaver:
     """
@@ -221,6 +208,7 @@ class ModelSaver:
 
     @property
     def num_timesteps(self) -> int:
+        """Number of timesteps."""
         return int(self._get_step())
 
     def save(self, path: str) -> None:
@@ -249,11 +237,8 @@ class ModelSaver:
         return torch.load(path, map_location=device)
 
     @staticmethod
-    def load_as_inference(
-        path: str,
-        policy_builder: Callable[[dict[str, Any]], nn.Module],
-        device: str | torch.device = "cpu",
-    ) -> "InferenceAdapter":
+    def load_as_inference(path: str, policy_builder: Callable[[dict[str, Any]], nn.Module],
+                          device: str | torch.device = "cpu") -> "InferenceAdapter":
         """
         High-level: build a policy via `policy_builder(args_dict)`,
         load weights, and wrap with an SB3-like .predict().
@@ -293,17 +278,15 @@ class InferenceAdapter:
         elif isinstance(x, dict):
             result = {k: InferenceAdapter._to_tensor(v, device, unsqueeze=unsqueeze) for k, v in x.items()}
         else:
-            try:
-                result = torch.as_tensor(x, device=device)
-                if unsqueeze:
-                    result = result.unsqueeze(0)
-            except Exception:
-                return x  # leave as-is if truly non-tensor data structure
+            result = torch.as_tensor(x, device=device)
+            if unsqueeze:
+                result = result.unsqueeze(0)
 
         return result
 
     @torch.inference_mode()
     def predict(self, obs: Any, deterministic: bool, action_masks : Tuple[torch.tensor, torch.tensor], unsqueeze):
+        """Mimics stable baselines behavior."""
         obs_t = InferenceAdapter._to_tensor(obs, self.device, unsqueeze)
 
         verb_mask_t: Optional[torch.Tensor] = None
@@ -373,6 +356,7 @@ class InfoCountsLogger:
         return result
 
     def on_step(self, infos) -> bool:
+        """Process a batch of info dictionaries."""
         count = len(next(iter(infos.values())))
         for i in range(count):
             info = self._build_dict(infos, i)
@@ -480,6 +464,7 @@ class InfoCountsLogger:
 
 @dataclass
 class PPOArgs:
+    """Parameters for PPO training."""
     env_id: str = "YenderFlow-v0"
     total_timesteps: int = 25_000_000
     num_envs: int = 20
@@ -494,7 +479,7 @@ class PPOArgs:
     ent_coef_dir: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    seed: int = 42
+    seed: int = None
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     exp_name: str = "nethack"
 
@@ -510,7 +495,7 @@ class PPOArgs:
     minibatch_size: int | None = 256
 
 
-def parse_args() -> PPOArgs:
+def _parse_args() -> PPOArgs:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-id", type=str, default=PPOArgs.env_id)
     parser.add_argument("--total-timesteps", type=int, default=PPOArgs.total_timesteps)
@@ -576,9 +561,10 @@ def parse_args() -> PPOArgs:
     )
     return args
 
-def main() -> None:
-    args = parse_args()
-    set_seed(args.seed)
+def train(args : PPOArgs) -> None:
+    """Train the PPO agent."""
+    if args.seed is not None:
+        _set_seed(args.seed)
     device = torch.device(args.device)
 
     # Create vectorized envs
@@ -718,8 +704,7 @@ def main() -> None:
             )
             last_value = last_value_t.cpu().numpy()
 
-        advantages, returns = rb.compute_gae(last_value, gamma=args.gamma, gae_lambda=args.gae_lambda)
-        rb.set_advantages_returns(advantages, returns)
+        rb.compute_gae(last_value, gamma=args.gamma, gae_lambda=args.gae_lambda)
         batch = rb.to_batches()
 
         # Normalize advantages
@@ -823,10 +808,10 @@ def _recover_envs_and_restart_rollout(args, envs):
 
 def _create_envs(args):
     if args.num_envs > 1:
-        envs = AsyncVectorEnv([make_env_thunk(args.env_id, args.seed, i) for i in range(args.num_envs)])
+        envs = AsyncVectorEnv([_make_env_thunk(args.env_id, args.seed, i) for i in range(args.num_envs)])
     else:
-        envs = SyncVectorEnv([make_env_thunk(args.env_id, args.seed, 0)])
+        envs = SyncVectorEnv([_make_env_thunk(args.env_id, args.seed, 0)])
     return envs
 
 if __name__ == "__main__":
-    main()
+    train(_parse_args())
