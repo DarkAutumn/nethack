@@ -12,7 +12,7 @@ from yndf.wrapper_rewards import NethackRewardWrapper
 from ppo_train import ModelSaver
 
 
-def get_action_masker(env: gym.Env) -> gym.Wrapper:
+def _get_action_masker(env: gym.Env) -> gym.Wrapper:
     action_masker = env
     while not hasattr(action_masker, "action_masks"):
         if isinstance(action_masker, gym.Wrapper):
@@ -22,7 +22,7 @@ def get_action_masker(env: gym.Env) -> gym.Wrapper:
     return action_masker
 
 
-def get_ending_handler(env: gym.Env):
+def _get_ending_handler(env: gym.Env):
     ending_handler = env
     while not isinstance(ending_handler, NethackRewardWrapper):
         if isinstance(ending_handler, gym.Wrapper):
@@ -41,8 +41,8 @@ class Controller(yndf.gui.NethackController):
         self.model = None  # will be an InferenceAdapter
         self.obs = None
 
-        self.action_masker = get_action_masker(env)
-        endings = get_ending_handler(env).endings
+        self.action_masker = _get_action_masker(env)
+        endings = _get_ending_handler(env).endings
         for x in endings:
             if x.name == "max-timesteps-reached":
                 x.disable()

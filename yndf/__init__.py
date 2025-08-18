@@ -33,5 +33,5 @@ GLYPH_MAX = nle.nethack.NO_GLYPH # pylint: disable=no-member
 __all__ = [
     NethackState.__name__,
     NethackMaskablePolicy.__name__,
-    GLYPH_MAX.__name__,
+    'GLYPH_MAX',
     ]

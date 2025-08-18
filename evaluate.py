@@ -20,7 +20,7 @@ from typing import List
 import gymnasium as gym
 from sb3_contrib.ppo_mask import MaskablePPO
 
-from debugger import get_action_masker
+from debugger import _get_action_masker
 from train import ACTIONS
 
 # Your project code should be importable (policy, env registration, etc.)
@@ -56,7 +56,7 @@ def evaluate_model(model_path: Path, episodes : int, deterministic: bool,
     results = []
     env = gym.make("YenderFlow-v0", actions=ACTIONS, replay_dir=replay_dir)
     model = MaskablePPO.load(model_path, env=env)
-    action_masker = get_action_masker(env)
+    action_masker = _get_action_masker(env)
 
     for ep in range(episodes):
         start_time = time.time()
