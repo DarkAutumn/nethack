@@ -121,6 +121,7 @@ class Controller(yndf.gui.NethackController):
 
 
 def main():
+    """Run the reward GUI debugger."""
     parser = argparse.ArgumentParser(description="Run the YenderFlow GUI debugger.")
     parser.add_argument("model_path", help="Path to a trained model (your custom .zip/.pt).")
     args = parser.parse_args()

@@ -397,16 +397,20 @@ class InfoCountsLogger:
 
 
     def should_emit_short(self, steps):
+        """Whether we should emit short logs."""
         return self._next_short_log_step <= steps
 
     def should_emit_long(self, steps):
+        """Whether we should emit long logs."""
         return self._next_log_step <= steps
 
     def emit_short_running(self, steps) -> bool:
+        """Emit short logs."""
         self._emit_averages(steps, self._averages_short, None, None)
         self._next_short_log_step += self._short_log_every
 
     def emit_long_running(self, steps) -> bool:
+        """Emit long logs."""
         self._next_log_step += self._log_every
 
         curr_emitted = set()

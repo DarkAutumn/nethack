@@ -1,10 +1,12 @@
 from typing import Dict, Optional, Tuple
 
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.nn.functional as F
 
-Directions = 9  # 8 compass + HERE/self
+from yndf.wrapper_actions import DIRECTIONS
+
+DIRECTION_COUNT = len(DIRECTIONS)
 
 def _masked_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Apply a boolean mask to logits by setting invalid positions to a large negative value.
@@ -89,9 +91,10 @@ class NethackPolicy(nn.Module):
         )
 
         # --- Fusion MLP to trunk ---
-        # We'll infer vector_fields dim and build a fusion layer on first call if dims mismatch
+        #  We'll infer vector_fields dim and build a fusion layer on first call if dims mismatch
+        # [map]64 + [agent]32 + [wave]32 + [vec]32 + [search]64
         self.fusion = nn.Sequential(
-            nn.Linear(64 + 32 + 32 + 32 + 64, self.trunk_hidden_dim),  # [map]64 + [agent]32 + [wave]32 + [vec]32 + [search]64
+            nn.Linear(64 + 32 + 32 + 32 + 64, self.trunk_hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(self.trunk_hidden_dim, self.trunk_hidden_dim),
             nn.ReLU(inplace=True),
@@ -103,15 +106,15 @@ class NethackPolicy(nn.Module):
         self.dir_head = nn.Sequential(
             nn.Linear(self.trunk_hidden_dim + self.verb_embed_dim, self.trunk_hidden_dim // 2),
             nn.Tanh(),
-            nn.Linear(self.trunk_hidden_dim // 2, Directions),
+            nn.Linear(self.trunk_hidden_dim // 2, DIRECTION_COUNT),
         )
         self.value_head = nn.Linear(self.trunk_hidden_dim, 1)
 
     @staticmethod
-    def _normalize_agent_coords(agent_yx: torch.Tensor, H: int, W: int) -> torch.Tensor:
+    def _normalize_agent_coords(agent_yx: torch.Tensor, height: int, width: int) -> torch.Tensor:
         # agent_yx is (B,2) with [y, x] in [0..H-1], [0..W-1]
-        y = agent_yx[..., 0] / max(H - 1, 1)
-        x = agent_yx[..., 1] / max(W - 1, 1)
+        y = agent_yx[..., 0] / max(height - 1, 1)
+        x = agent_yx[..., 1] / max(width - 1, 1)
         # scale to [-1, 1]
         y = y * 2.0 - 1.0
         x = x * 2.0 - 1.0
@@ -121,7 +124,7 @@ class NethackPolicy(nn.Module):
         self, glyphs: torch.Tensor, visited_mask: torch.Tensor, agent_yx: torch.Tensor
     ) -> torch.Tensor:
         """Encode map with glyph embeddings + visited + optional agent one-hot; returns pooled (B, 64)."""
-        B, H, W = glyphs.shape
+        batch, height, width = glyphs.shape
         # Safety: modulo to embedding size; clamp negatives
         glyphs = glyphs % self.glyph_vocab_size
         emb = self.glyph_embedding(glyphs)  # (B, H, W, E)
@@ -130,10 +133,10 @@ class NethackPolicy(nn.Module):
         visited = visited_mask.unsqueeze(1).float()  # (B,1,H,W)
 
         if self.use_agent_onehot:
-            agent_map = torch.zeros((B, 1, H, W), dtype=emb.dtype, device=emb.device)
-            ay = agent_yx[..., 0].long().clamp_(0, H - 1)
-            ax = agent_yx[..., 1].long().clamp_(0, W - 1)
-            agent_map[torch.arange(B, device=emb.device), 0, ay, ax] = 1.0
+            agent_map = torch.zeros((batch, 1, height, width), dtype=emb.dtype, device=emb.device)
+            ay = agent_yx[..., 0].long().clamp_(0, height - 1)
+            ax = agent_yx[..., 1].long().clamp_(0, width - 1)
+            agent_map[torch.arange(batch, device=emb.device), 0, ay, ax] = 1.0
             x = torch.cat([emb, visited, agent_map], dim=1)
         else:
             x = torch.cat([emb, visited], dim=1)
@@ -153,6 +156,7 @@ class NethackPolicy(nn.Module):
             # Keep fc_vector_fields_2 as defined (it takes 32 in)
 
     def encode_trunk(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Encode the trunk of the model using the provided observations."""
         glyphs = obs["glyphs"].long()
         visited = obs["visited_mask"].float()
         agent_yx = obs["agent_yx"].float()
@@ -160,10 +164,10 @@ class NethackPolicy(nn.Module):
         vector_fields = obs["vector_fields"].float()
         search_scores = obs["search_scores"].float()
 
-        B, H, W = glyphs.shape
+        batch, height, width = glyphs.shape
         map_feat = self._encode_map(glyphs, visited, agent_yx)  # (B,64)
 
-        agent_norm = self._normalize_agent_coords(agent_yx, H, W)
+        agent_norm = self._normalize_agent_coords(agent_yx, height, width)
         agent_feat = self.fc_agent(agent_norm)  # (B,32)
 
         wave_feat = self.fc_wavefront(wavefront)  # (B,32)
@@ -171,7 +175,7 @@ class NethackPolicy(nn.Module):
         self._maybe_rebuild_vector_layers(vector_fields)
         vec_feat = self.fc_vector_fields_2(self.fc_vector_fields_1(vector_fields))  # (B,32)
 
-        search_flat = search_scores.view(B, -1)
+        search_flat = search_scores.view(batch, -1)
         search_feat = self.fc_search(search_flat)  # (B,64)
 
         fused = torch.cat([map_feat, agent_feat, wave_feat, vec_feat, search_feat], dim=-1)  # (B,224)
@@ -179,6 +183,7 @@ class NethackPolicy(nn.Module):
         return trunk
 
     def forward(self, obs: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass for encoding observations."""
         trunk = self.encode_trunk(obs)
         verb_logits = self.verb_head(trunk)  # (B, A)
         value = self.value_head(trunk).squeeze(-1)  # (B,)
@@ -223,12 +228,12 @@ class NethackPolicy(nn.Module):
         entropy_verb = verb_dist.entropy()
 
         # Direction distribution conditioned on chosen verb
-        B = trunk.shape[0]
+        batch = trunk.shape[0]
         verb_emb = self.verb_embedding(action_verb).detach()  # stop-gradient trick
         dir_logits = self.dir_head(torch.cat([trunk, verb_emb], dim=-1))  # (B, 9)
 
         # Gather the direction mask row for each chosen verb
-        batch_idx = torch.arange(B, device=trunk.device)
+        batch_idx = torch.arange(batch, device=trunk.device)
         dir_mask = dir_mask_per_verb[batch_idx, action_verb]  # (B, 9) bool
         requires_dir = dir_mask.any(dim=-1)  # (B,)
 
@@ -326,7 +331,7 @@ class NethackPolicy(nn.Module):
         """
         assert temperature > 0, "temperature must be > 0"
         trunk = self.encode_trunk(obs)  # (B, hidden)
-        B, A = trunk.shape[0], self.num_verbs
+        batch, verbs = trunk.shape[0], self.num_verbs
 
         # ---- Verb probs (masked softmax) ----
         verb_logits = self.verb_head(trunk) / temperature  # (B, A)
@@ -335,15 +340,15 @@ class NethackPolicy(nn.Module):
 
         # ---- Direction probs for every verb (vectorized) ----
         # Build (B, A, hidden+emb) then run dir_head on (B*A, ...)
-        all_verbs = torch.arange(A, device=trunk.device)
+        all_verbs = torch.arange(verbs, device=trunk.device)
         verb_emb_table = self.verb_embedding(all_verbs)  # (A, E)
 
-        trunk_exp = trunk.unsqueeze(1).expand(-1, A, -1)            # (B, A, hidden)
-        verb_emb_exp = verb_emb_table.unsqueeze(0).expand(B, -1, -1)  # (B, A, E)
+        trunk_exp = trunk.unsqueeze(1).expand(-1, verbs, -1)            # (B, A, hidden)
+        verb_emb_exp = verb_emb_table.unsqueeze(0).expand(batch, -1, -1)  # (B, A, E)
         dir_in = torch.cat([trunk_exp, verb_emb_exp], dim=-1)       # (B, A, hidden+E)
 
-        dir_logits_all = self.dir_head(dir_in.reshape(B * A, -1))   # (B*A, 9)
-        dir_logits_all = (dir_logits_all / temperature).reshape(B, A, Directions)  # (B, A, 9)
+        dir_logits_all = self.dir_head(dir_in.reshape(batch * verbs, -1))   # (B*A, 9)
+        dir_logits_all = (dir_logits_all / temperature).reshape(batch, verbs, DIRECTION_COUNT)  # (B, A, 9)
 
         # Mask per-verb directions and softmax along last dim
         requires_dir_per_verb = dir_mask_per_verb.any(dim=-1)  # (B, A) bool
