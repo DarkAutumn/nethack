@@ -3,7 +3,7 @@
 import gymnasium as gym
 import numpy as np
 
-from yndf.nethack_level import GlyphLookupTable
+from yndf.nethack_level import GlyphLookupTable, PassableGlyphs
 from yndf.nethack_state import NethackState
 
 CARDINALS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -47,6 +47,10 @@ class NethackObsWrapper(gym.Wrapper):
         state : NethackState = info["state"]
 
         glyphs = obs["glyphs"].astype(np.int16)
+        for pet in np.argwhere(state.floor.pet_mask):
+            glyphs[pet[0], pet[1]] = PassableGlyphs.S_room.value  # Remove pet glyphs
+
+
         agent_yx = np.array(state.player.position, dtype=np.int16)
         search_scores = self._get_padded_7x7(state.floor.search_score, state.player.position, r = 3)
         mult = (self._get_padded_7x7(state.floor.search_count, state.player.position, r = 3) < 22).astype(np.float32)
@@ -67,7 +71,7 @@ class NethackObsWrapper(gym.Wrapper):
         fields = np.zeros((MAX_FIELD,), dtype=np.float32)
 
         fields[FIELD_ENEMIES_PRESENT] = 1.0 if floor.num_enemies > 0 else 0.0
-        fields[FIELD_IN_ROOM] = 1.0 if floor.properties[state.player.position] & GlyphLookupTable.FLOOR else 0.0
+        fields[FIELD_IN_ROOM] = 1.0 if floor.properties[state.player.position] & GlyphLookupTable.DUNGEON_FLOOR else 0.0
         fields[FIELD_IN_CORRIDOR] = 1.0 if floor.properties[state.player.position] & GlyphLookupTable.CORRIDOR else 0.0
         fields[FIELD_AT_DEAD_END] = 1.0 if floor.properties[state.player.position] & floor.DEAD_END else 0.0
 

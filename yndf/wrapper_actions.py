@@ -8,7 +8,7 @@ from yndf.nethack_level import GLYPH_TABLE
 from yndf.nethack_state import NethackState
 from yndf.nethack_level import DungeonLevel
 
-DIRECTION_MAP = {
+COORDINATE_MAP = {
     nethack.CompassDirection.NW : (-1, -1),
     nethack.CompassDirection.N : (-1, 0),
     nethack.CompassDirection.NE : (-1, 1),
@@ -19,7 +19,7 @@ DIRECTION_MAP = {
     nethack.CompassDirection.SE : (1, 1),
 }
 
-DIRECTION_TO_ACTION = {
+COORDINATE_TO_ACTION = {
     (-1, -1): nethack.CompassDirection.NW,
     (-1, 0): nethack.CompassDirection.N,
     (-1, 1): nethack.CompassDirection.NE,
@@ -29,6 +29,13 @@ DIRECTION_TO_ACTION = {
     (1, 0): nethack.CompassDirection.S,
     (1, 1): nethack.CompassDirection.SE,
 }
+
+DIRECTIONS = tuple(nethack.CompassDirection) + (nethack.MiscDirection.WAIT,)
+DIRECTION_TO_INDEX = {dir: i for i, dir in enumerate(DIRECTIONS)}
+VERBS = (nethack.Command.MOVE, nethack.Command.KICK, nethack.Command.SEARCH, nethack.MiscDirection.DOWN)
+VERB_TO_INDEX = {verb: i for i, verb in enumerate(VERBS)}
+
+SEARCH_COUNT = 22
 
 class UserInputAction:
     """A class to represent user input actions."""
@@ -42,151 +49,181 @@ class UserInputAction:
 class NethackActionWrapper(gym.Wrapper):
     """Convert NLE observation → dict(glyphs, visited_mask, agent_yx)."""
 
-    def __init__(self, env : gym.Env, actions) -> None:
+    def __init__(self, env : gym.Env) -> None:
         super().__init__(env)
 
-        self.action_space = gym.spaces.Discrete(len(actions))
-
+        self.action_space = gym.spaces.MultiDiscrete([len(VERBS), len(DIRECTIONS)])
         self._state: NethackState = None
-        self._action_directions = {}
-        for direction, (dy, dx) in DIRECTION_MAP.items():
-            if direction not in actions:
-                continue
-            self._action_directions[actions.index(direction)] = (dy, dx)
-
-        self.kick_index = self._get_index_or_none(nethack.Command.KICK, actions)
-        self.search_index = self._get_index_or_none(nethack.Command.SEARCH, actions)
-        self._descend_index = self._get_index_or_none(nethack.MiscDirection.DOWN, actions)
-
-        self._unwrapped_actions = self.unwrapped.actions
-        self.model_actions = actions
-        self._action_map = {}
-        for i, action in enumerate(actions):
-            self._action_map[i] = self._unwrapped_actions.index(action)
-
-        self._action_index_by_token = {tok: i for i, tok in enumerate(self.model_actions)}
-        self._valid_kick_actions = []
+        self._action_to_index = {}
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
         self._state: NethackState = info["state"]
-        info["action_mask"] = self.action_masks()
-        self._valid_kick_actions = self.get_valid_kick_actions(self._state)
         return obs, info
 
     def step(self, action):  # type: ignore[override]
-        is_user_input = isinstance(action, UserInputAction)
-        action_is_search = action == self.search_index or (is_user_input and action.chr == 's')
-        if action_is_search:
-            self.unwrapped.nethack.step(ord('n'))
-            self.unwrapped.nethack.step(ord('2'))
-            self.unwrapped.nethack.step(ord('2'))
+        verb, direction, index = self._action_to_verb(action)
 
-        elif action == self.kick_index or (is_user_input and action.action == 4):
-            if not is_user_input:
-                self.unwrapped.nethack.step(self.model_actions[self.kick_index].value)
-                if self._valid_kick_actions:
-                    action = self._valid_kick_actions[0]
-                else:
-                    print("Warning: No valid kick actions available.")
-                    action = nethack.Command.ESC
+        # search is always an 22 turn search
+        search_count = self._state.floor.search_count[self._state.player.position]
+        if verb == nethack.Command.SEARCH and search_count < SEARCH_COUNT:
+            remaining_search = SEARCH_COUNT - search_count
+            if remaining_search > 1:
+                remaining_search = min(remaining_search, SEARCH_COUNT)
 
-        action = self._translate_action(action)
+                self.unwrapped.nethack.step(ord('n'))
+                for c in str(remaining_search):
+                    self.unwrapped.nethack.step(ord(c))
 
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        elif verb == nethack.Command.KICK:
+            self.unwrapped.nethack.step(nethack.Command.KICK.value)
+            index = self._get_env_index(direction)
+
+        obs, reward, terminated, truncated, info = self.env.step(index)
         state = info["state"]
+        if "yn" in state.message:
+            self.unwrapped.nethack.step(ord('n'))
 
-        if action_is_search:
-            self._add_search_count(self._state, state)
+        if verb == nethack.Command.SEARCH:
+            state.floor.search_count[self._state.player.position] += state.time - self._state.time
 
         self._state: NethackState = state
-
-        info["action_mask"] = self.action_masks()
         return obs, reward, terminated, truncated, info
 
-    def _add_search_count(self, prev: NethackState, state: NethackState):
-        time = state.time - prev.time
-        state.floor.search_count[prev.player.position] += time
-
-    def _get_index_or_none(self, action, actions):
-        if action in actions:
-            return actions.index(action)
-        return None
-
-    def _translate_action(self, action):
+    def _action_to_verb(self, action):
+        """Convert action from the model/user into a verb, direction, and environment index."""
         if isinstance(action, UserInputAction):
-            #if action.action not in
-            unwrapped_actions = self.unwrapped.actions
-            if action.action not in unwrapped_actions:
-                print(f"Invalid action: {action}. Must be one of {unwrapped_actions}.")
-                return None
+            verb = None
+            direction = None
 
-            action = unwrapped_actions.index(action.action)
+            if action.chr == 's':
+                verb = nethack.Command.SEARCH
+            elif action.chr == '>':
+                verb = nethack.MiscDirection.DOWN
+            elif action.action == 4:
+                verb = nethack.Command.KICK
+            elif action.action in DIRECTIONS:
+                verb = nethack.Command.MOVE
+                if action == nethack.MiscDirection.WAIT:
+                    direction = action
+                else:
+                    direction = nethack.CompassDirection(action.action)
+
+            index = self.unwrapped.actions.index(action.action)
+
         else:
-            action = self._action_map.get(int(action), action)
+            verb = VERBS[action[0]]
+            direction = DIRECTIONS[action[1]]
 
-        return action
+            verb_or_direction = verb if verb != nethack.Command.MOVE else direction
+
+            index = self._get_env_index(verb_or_direction)
+
+        return verb, direction, index
+
+    def _get_env_index(self, verb_or_direction):
+        if (index := self._action_to_index.get(verb_or_direction)) is None:
+            index = self.unwrapped.actions.index(verb_or_direction)
+            self._action_to_index[verb_or_direction] = index
+        return index
 
     def action_masks(self):
         """Return the action mask for the current state."""
-        h, w = self._state.floor.properties.shape
-        y, x = self._state.player.position
 
-        props      = self._state.floor.properties
-        passable   = (props & GLYPH_TABLE.PASSABLE) != 0
-        open_door  = (props & GLYPH_TABLE.OPEN_DOOR) != 0
-        closed_door= (props & GLYPH_TABLE.CLOSED_DOOR) != 0
-        locked     = (props & self._state.floor.LOCKED_DOOR) != 0
+        verb_mask = np.zeros((len(VERBS),), dtype=bool)
+        direction_mask = np.zeros((len(VERBS), len(DIRECTIONS)), dtype=bool)
 
-        mask = np.ones(self.action_space.n, dtype=bool)
+        move_index = VERB_TO_INDEX[nethack.Command.MOVE]
+        move_mask = self._get_move_mask()
+        direction_mask[move_index] = move_mask
+        verb_mask[move_index] = move_mask.any()
 
-        # Descend only if standing on an exit
-        if self._descend_index is not None:
-            on_exit = (props[y, x] & GLYPH_TABLE.DESCEND_LOCATION) != 0
-            mask[self._descend_index] = bool(on_exit)
+        kick_index = VERB_TO_INDEX[nethack.Command.KICK]
+        kick_mask = self._get_kick_mask()
+        direction_mask[kick_index] = kick_mask
+        verb_mask[kick_index] = kick_mask.any()
 
-        # Movement actions
-        for index, (dy, dx) in self._action_directions.items():
-            ny, nx = y + dy, x + dx
-            # in-bounds?
-            if not (0 <= ny < h and 0 <= nx < w):
-                mask[index] = False
-                continue
+        verb_mask[VERB_TO_INDEX[nethack.Command.SEARCH]] = self._can_search(self._state)
+        verb_mask[VERB_TO_INDEX[nethack.MiscDirection.DOWN]] = self._state.floor.exits[self._state.player.position]
 
-            # Block diagonal through an open door (at either endpoint)
-            if dy != 0 and dx != 0 and (open_door[y, x] or open_door[ny, nx]):
-                mask[index] = False
-                continue
+        return verb_mask, direction_mask
 
-            # Allow if destination is actually passable,
-            # OR it's a closed door that is not locked (moving opens it)
-            if passable[ny, nx] or (closed_door[ny, nx] and not locked[ny, nx]):
-                mask[index] = True
+    def _get_kick_mask(self) -> np.ndarray:
+        """Return the kick mask for the current state."""
+        # don't allow kicking pets, walls, or open air
+        floor = self._state.floor
+        can_kick = floor.objects | floor.enemies | floor.corpses | floor.closed_doors
+
+        kick_mask = np.zeros((len(DIRECTIONS),), dtype=bool)
+        for index, direction in enumerate(DIRECTIONS):
+            # cannot kick yourself
+            if direction == nethack.MiscDirection.WAIT:
+                kick_mask[index] = False
+
             else:
-                mask[index] = False
+                dy, dx = COORDINATE_MAP[direction]
+                y, x = self._state.player.position[0] + dy, self._state.player.position[1] + dx
 
-        # Kick only if there is a locked door in a cardinal neighbor
-        if self.kick_index is not None:
-            self._valid_kick_actions = self.get_valid_kick_actions(self._state)
-            mask[self.kick_index] = len(self._valid_kick_actions) > 0
+                if not (0 <= y < floor.properties.shape[0] and 0 <= x < floor.properties.shape[1]):
+                    kick_mask[index] = False
 
-        if self.search_index is not None:
-            mask[self.search_index] = self._get_search_mask(self._state)
+                else:
+                    kick_mask[index] = can_kick[y, x]
 
-        return mask
+        return kick_mask
 
-    def _get_search_mask(self, state: NethackState) -> bool:
+    def _get_move_mask(self) -> np.ndarray:
+        """Return the movement mask for the current state."""
+        direction_mask = np.zeros((len(DIRECTIONS),), dtype=bool)
+        for index, direction in enumerate(DIRECTIONS):
+            # For now, we disable waiting to compare to previous models
+            if direction == nethack.MiscDirection.WAIT:
+                direction_mask[index] = False
+
+            else:
+                y, x = self._state.player.position
+                dy, dx = COORDINATE_MAP[direction]
+                ny, nx = y + dy, x + dx
+
+                direction_mask[index] = self._can_move(y, x, ny, nx, dy, dx)
+
+        return direction_mask
+
+    def _can_move(self, y, x, ny, nx, dy, dx) -> bool:
+        """Check if the player can move from one position to another."""
+        floor = self._state.floor
+        open_door = floor.open_doors
+
+        # in-bounds?
+        if not (0 <= ny < open_door.shape[0] and 0 <= nx < open_door.shape[1]):
+            return False
+
+        # Block diagonal through an open door (at either endpoint)
+        if (dy != 0 and dx != 0 and (open_door[y, x] or open_door[ny, nx])):
+            return False
+
+        # Allow movement into closed doors that aren't locked.
+        if floor.closed_doors[ny, nx]:
+            return not floor.locked_doors[ny, nx]
+
+        # Otherwise, check if the tile is passable.
+        return floor.passable[ny, nx]
+
+    def _can_search(self, state: NethackState) -> bool:
         """Check if the player can search."""
         floor = state.floor
         pos = state.player.position
 
-        if floor.wavefront[pos] <= 2:
-            return False
-
         if floor.search_count[pos] >= 22:
             return False
 
+        if floor.search_score[pos] >= 0.9:
+            return True
+
         if floor.search_score[pos] < 0.2:
+            return False
+
+        if floor.wavefront[pos] <= 2:
             return False
 
         if (floor.properties[pos] & DungeonLevel.WALLS_ADJACENT) == 0:
@@ -195,35 +232,4 @@ class NethackActionWrapper(gym.Wrapper):
         if ((floor.properties & GLYPH_TABLE.DESCEND_LOCATION) != 0).any():
             return False
 
-        if floor.num_enemies > 0:
-            return False
-
-        return True
-
-    def translate_to_keycode(self, action: int) -> str:
-        """Translate an action index to a keypress character."""
-        if isinstance(action, UserInputAction):
-            return action.action
-
-        action = self._unwrapped_actions[action]
-
-
-        return action.value
-
-    def get_valid_kick_actions(self, state : NethackState) -> list[int]:
-        """Return action indices for directions with a locked door adjacent (8 directions)."""
-        props = state.floor.properties
-        h, w = props.shape
-        y, x = state.player.position
-
-        # Locked closed door mask
-        locked_door = (props & state.floor.LOCKED_DOOR) != 0
-
-        result: list[int] = []
-        for dy, dx in self._action_directions.values():  # includes all 8 directions
-            ny, nx = y + dy, x + dx
-            if 0 <= ny < h and 0 <= nx < w and locked_door[ny, nx]:
-                token = DIRECTION_TO_ACTION[(dy, dx)]
-                result.append(self._action_index_by_token[token])
-
-        return result
+        return floor.num_enemies == 0

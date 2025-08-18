@@ -1,7 +1,7 @@
 """A wrapper to expose NethackState object as info['state']."""
 
 import gymnasium as gym
-from yndf.wrapper_actions import DIRECTION_MAP
+from yndf.wrapper_actions import COORDINATE_MAP
 from yndf.nethack_state import NethackState
 
 class NethackStateWrapper(gym.Wrapper):
@@ -27,19 +27,24 @@ class NethackStateWrapper(gym.Wrapper):
 
         if self._current_state.message == "This door is locked.":
             pos = self._get_target_position(action)
-            self._current_state.add_locked_door(pos)
+            if pos is not None:
+                self._current_state.add_locked_door(pos)
 
         if self._current_state.message == "You try to move the boulder, but in vain." or \
                "Perhaps that's why you cannot move it." in self._current_state.message:
             # If the player tried to move a boulder and can't, we need to disallow that action
-            self._current_state.add_stuck_boulder(self._current_state.player.position,
-                                                  self._get_target_position(action))
+            pos = self._get_target_position(action)
+            if pos is not None:
+                self._current_state.add_stuck_boulder(self._current_state.player.position, pos)
 
         return obs, reward, terminated, truncated, info
 
     def _get_target_position(self, action):
         actions = self.env.unwrapped.actions
-        direction = DIRECTION_MAP[actions[action]]
+        direction = COORDINATE_MAP.get(actions[action], None)
+        if direction is None:
+            return None
+
         pos = (self._current_state.player.position[0] + direction[0],
                    self._current_state.player.position[1] + direction[1])
 

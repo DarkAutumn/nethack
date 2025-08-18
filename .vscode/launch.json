@@ -11,11 +11,29 @@
             "justMyCode": false
         },
         {
+            "name": "Train New",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "ppo_train.py",
+            "args": ["--num-envs", "1"],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
             "name": "Reward Debugger",
             "type": "debugpy",
             "request": "launch",
             "program": "debugger.py",
             "args": ["models/"],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Evaluate Debugger",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "evaluate.py",
+            "args": ["models/nethack.zip"],
             "console": "integratedTerminal",
             "justMyCode": false
         },

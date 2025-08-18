@@ -2,7 +2,7 @@
 
 import gymnasium as gym
 from nle import nethack
-from yndf.endings import  MaxTimestepsReached, NoForwardPathWithoutSearching
+from yndf.endings import  MaxTimestepsReached
 from yndf.nethack_state import NethackState
 
 class Reward:
@@ -46,14 +46,12 @@ DEATH_PENALTIES = {
 
 class NethackRewardWrapper(gym.Wrapper):
     """Convert NLE reward to a more useful form."""
-    def __init__(self, env: gym.Env, has_search: bool = False) -> None:
+    def __init__(self, env: gym.Env) -> None:
         super().__init__(env)
-        self._prev : NethackState = None
-        self._has_search = has_search
-
         self.endings = [MaxTimestepsReached()]
-        if not has_search:
-            self.endings.append(NoForwardPathWithoutSearching())
+        self._prev : NethackState = None
+        self._total_steps = 0
+        self._total_reward = 0
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
@@ -61,6 +59,9 @@ class NethackRewardWrapper(gym.Wrapper):
 
         for ending in self.endings:
             ending.reset(self._prev)
+
+        self._total_steps = 0
+        self._total_reward = 0
 
         return obs, info
 
@@ -91,6 +92,13 @@ class NethackRewardWrapper(gym.Wrapper):
         for r in reward_list:
             reward += r.value
             details[r.name] = details.get(r.name, 0.0) + r.value
+
+        self._total_reward += reward
+        self._total_steps += 1
+
+        if terminated or truncated:
+            info['total_reward'] = self._total_reward
+            info['total_steps'] = self._total_steps
 
         self._prev = state
         return obs, reward, terminated, truncated, info

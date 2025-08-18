@@ -1,15 +1,4 @@
-#!/usr/bin/env python3
-"""Evaluate a trained MaskablePPO model on YenderFlow NetHack.
-
-Runs full episodes (terminated or truncated) in parallel until the requested
-number of episodes completes, collecting EpisodeResult for each.
-
-Example:
-    python evaluate.py /path/to/model.zip --episodes 100 --parallel 10
-"""
-
-from __future__ import annotations
-
+"""Evaluate a NetHack model."""
 import argparse
 from collections import Counter
 from dataclasses import dataclass
@@ -18,11 +7,9 @@ import time
 from typing import List
 
 import gymnasium as gym
-from sb3_contrib.ppo_mask import MaskablePPO
 
-from debugger import get_action_masker
-from train import ACTIONS
-
+from debugger import _get_action_masker, _get_ending_handler
+from models import load_model
 # Your project code should be importable (policy, env registration, etc.)
 
 @dataclass(frozen=True, slots=True)
@@ -34,15 +21,13 @@ class EpisodeResult:
     max_depth: int
     ending : str = None  # Ending type, e.g. "success", "death", etc.
 
-def evaluate_model(model_path: Path, episodes : int, deterministic: bool,
-                   replay_dir: str, quiet: bool) -> List[EpisodeResult]:
+def evaluate_model(model_path: Path, episodes : int, deterministic: bool, quiet: bool) -> List[EpisodeResult]:
     """Run full episodes in parallel until `episodes` have completed.
 
     Args:
         model_path: Path to saved .zip model.
         episodes: Total number of completed episodes to gather.
         deterministic: Use deterministic actions.
-        replay_dir: Pass through to envs.
         quiet: Suppress output except for final results.
 
     Returns:
@@ -54,9 +39,13 @@ def evaluate_model(model_path: Path, episodes : int, deterministic: bool,
         raise FileNotFoundError(f"Model not found: {model_path}")
 
     results = []
-    env = gym.make("YenderFlow-v0", actions=ACTIONS, replay_dir=replay_dir)
-    model = MaskablePPO.load(model_path, env=env)
-    action_masker = get_action_masker(env)
+    env = gym.make("YenderFlow-v0")
+    endings = _get_ending_handler(env).endings
+    for x in endings:
+        if x.name == "max-timesteps-reached":
+            x.disable()
+    model = load_model(model_path)
+    action_masker = _get_action_masker(env)
 
     for ep in range(episodes):
         start_time = time.time()
@@ -70,7 +59,7 @@ def evaluate_model(model_path: Path, episodes : int, deterministic: bool,
 
         while not (terminated or truncated):
             action_masks = action_masker.action_masks()
-            action = model.predict(obs, deterministic=deterministic, action_masks=action_masks)[0]
+            action = model.predict(obs, deterministic=deterministic, action_masks=action_masks, unsqueeze=True)[0]
             obs, reward, terminated, truncated, info = env.step(action)
 
             total_reward += reward
@@ -121,14 +110,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    results = evaluate_model(
-        model_path=args.model,
-        episodes=args.episodes,
-        deterministic=not args.stochastic,
-        replay_dir=args.replay_dir,
-        quiet=args.quiet
-    )
-
+    results = evaluate_model(args.model, args.episodes, not args.stochastic, args.quiet)
 
     total_episodes = len(results)
     avg_reward = sum(r.total_reward for r in results) / total_episodes
