@@ -6,16 +6,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "train.py",
-            "args": ["10_000", "--parallel", "1", "--output", "models/test"],
-            "console": "integratedTerminal",
-            "justMyCode": false
-        },
-        {
-            "name": "Train New",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "ppo_train.py",
-            "args": ["--num-envs", "1"],
+            "args": ["--num-envs", "1", "--model-name", "testing"],
             "console": "integratedTerminal",
             "justMyCode": false
         },
