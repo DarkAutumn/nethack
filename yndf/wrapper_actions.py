@@ -35,6 +35,9 @@ DIRECTION_TO_INDEX = {dir: i for i, dir in enumerate(DIRECTIONS)}
 VERBS = (nethack.Command.MOVE, nethack.Command.KICK, nethack.Command.SEARCH, nethack.MiscDirection.DOWN)
 VERB_TO_INDEX = {verb: i for i, verb in enumerate(VERBS)}
 
+DIRECTION_COUNT = len(DIRECTIONS)
+VERB_COUNT = len(VERBS)
+
 SEARCH_COUNT = 22
 
 class UserInputAction:
@@ -52,13 +55,17 @@ class NethackActionWrapper(gym.Wrapper):
     def __init__(self, env : gym.Env) -> None:
         super().__init__(env)
 
-        self.action_space = gym.spaces.MultiDiscrete([len(VERBS), len(DIRECTIONS)])
+        self.action_space = gym.spaces.MultiDiscrete([VERB_COUNT, DIRECTION_COUNT])
+        self.observation_space["prev_action"] = gym.spaces.MultiDiscrete([VERB_COUNT + 1, DIRECTION_COUNT + 1])
         self._state: NethackState = None
         self._action_to_index = {}
+        self._prev_action = None
 
     def reset(self, **kwargs):  # type: ignore[override]
         obs, info = self.env.reset(**kwargs)
         self._state: NethackState = info["state"]
+        self._prev_action = None
+        obs["prev_action"] = np.array([VERB_COUNT, DIRECTION_COUNT], dtype=np.int64)
         return obs, info
 
     def step(self, action):  # type: ignore[override]
@@ -88,6 +95,7 @@ class NethackActionWrapper(gym.Wrapper):
             state.floor.search_count[self._state.player.position] += state.time - self._state.time
 
         self._state: NethackState = state
+        obs["prev_action"] = np.array(self._prev_action, dtype=np.int64)
         return obs, reward, terminated, truncated, info
 
     def _action_to_verb(self, action):
@@ -111,6 +119,10 @@ class NethackActionWrapper(gym.Wrapper):
 
             index = self.unwrapped.actions.index(action.action)
 
+            verb_for_last = VERBS.index(verb) if verb in VERBS else VERB_COUNT
+            verb_for_dir = DIRECTIONS.index(direction) if direction in DIRECTIONS else DIRECTION_COUNT
+            self._prev_action = [verb_for_last, verb_for_dir]
+
         else:
             verb = VERBS[action[0]]
             direction = DIRECTIONS[action[1]]
@@ -118,6 +130,7 @@ class NethackActionWrapper(gym.Wrapper):
             verb_or_direction = verb if verb != nethack.Command.MOVE else direction
 
             index = self._get_env_index(verb_or_direction)
+            self._prev_action = action[0], action[1] if action[1] != -1 else DIRECTION_COUNT
 
         return verb, direction, index
 
@@ -130,8 +143,8 @@ class NethackActionWrapper(gym.Wrapper):
     def action_masks(self):
         """Return the action mask for the current state."""
 
-        verb_mask = np.zeros((len(VERBS),), dtype=bool)
-        direction_mask = np.zeros((len(VERBS), len(DIRECTIONS)), dtype=bool)
+        verb_mask = np.zeros((VERB_COUNT,), dtype=bool)
+        direction_mask = np.zeros((VERB_COUNT, DIRECTION_COUNT), dtype=bool)
 
         move_index = VERB_TO_INDEX[nethack.Command.MOVE]
         move_mask = self._get_move_mask()
@@ -154,7 +167,7 @@ class NethackActionWrapper(gym.Wrapper):
         floor = self._state.floor
         can_kick = floor.objects | floor.enemies | floor.corpses | floor.closed_doors
 
-        kick_mask = np.zeros((len(DIRECTIONS),), dtype=bool)
+        kick_mask = np.zeros((DIRECTION_COUNT,), dtype=bool)
         for index, direction in enumerate(DIRECTIONS):
             # cannot kick yourself
             if direction == nethack.MiscDirection.WAIT:
@@ -174,7 +187,7 @@ class NethackActionWrapper(gym.Wrapper):
 
     def _get_move_mask(self) -> np.ndarray:
         """Return the movement mask for the current state."""
-        direction_mask = np.zeros((len(DIRECTIONS),), dtype=bool)
+        direction_mask = np.zeros((DIRECTION_COUNT,), dtype=bool)
         for index, direction in enumerate(DIRECTIONS):
             # For now, we disable waiting to compare to previous models
             if direction == nethack.MiscDirection.WAIT:
