@@ -42,6 +42,7 @@ class NethackPolicy(nn.Module):
       - vector_fields: Float[B, F] (scalar global features)
       - search_scores: Float[B, 7, 7]
       - prev_action:   Long[B, 2]  (prev_verb, prev_dir). Accepts sentinel (-1) or “last index” coding.
+      - message_text:  Byte/Long[B, L] (ascii bytes 255; padded to fixed L)
 
     The model does not assume fixed H, W but is tuned to ~21x79.
     """
@@ -100,9 +101,9 @@ class NethackPolicy(nn.Module):
 
         # --- Fusion MLP to trunk ---
         #  We'll infer vector_fields dim and build a fusion layer on first call if dims mismatch
-        # [map]64 + [agent]32 + [wave]32 + [vec]32 + [search]64 + [prev_action]32
+        # [map]64 + [agent]32 + [wave]32 + [vec]32 + [search]64 + [prev_action]32 + [msg]32
         self.fusion = nn.Sequential(
-            nn.Linear(64 + 32 + 32 + 32 + 64 + 32, self.trunk_hidden_dim),
+            nn.Linear(64 + 32 + 32 + 32 + 64 + 32 + 32, self.trunk_hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(self.trunk_hidden_dim, self.trunk_hidden_dim),
             nn.ReLU(inplace=True),
@@ -121,6 +122,19 @@ class NethackPolicy(nn.Module):
         self.prev_dir_emb  = nn.Embedding(DIRECTION_COUNT + 1, 16)
         self.fc_prev_action = nn.Sequential(
             nn.Linear(32, 32),
+            nn.ReLU(inplace=True),
+        )
+        self.msg_byte_embed = nn.Embedding(255, 16)
+        self.msg_cnn = nn.Sequential(
+            nn.Conv1d(16, 64, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(64, 64, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveMaxPool1d(1),
+        )
+
+        self.msg_proj = nn.Sequential(
+            nn.Linear(64, 32),
             nn.ReLU(inplace=True),
         )
 
@@ -178,6 +192,7 @@ class NethackPolicy(nn.Module):
         vector_fields = obs["vector_fields"].float()
         search_scores = obs["search_scores"].float()
         prev_action = obs["prev_action"].long()
+        message_text = obs["message"]
 
         batch, height, width = glyphs.shape
         map_feat = self._encode_map(glyphs, visited, agent_yx)  # (B,64)
@@ -204,7 +219,13 @@ class NethackPolicy(nn.Module):
         prev_dir_vec  = self.prev_dir_emb(prev_dir_idx)    # (B,16)
         prev_feat = self.fc_prev_action(torch.cat([prev_verb_vec, prev_dir_vec], dim=-1))  # (B,32)
 
-        fused = torch.cat([map_feat, agent_feat, wave_feat, vec_feat, search_feat, prev_feat], dim=-1)  # (B,224)
+        msg_bytes = message_text.long()                    # (B, L)
+        msg_emb = self.msg_byte_embed(msg_bytes)           # (B, L, 16)
+        msg_emb = msg_emb.permute(0, 2, 1).contiguous()    # (B, 16, L)
+        msg_feat_text = self.msg_cnn(msg_emb).squeeze(-1)  # (B, 64)
+        msg_feat = self.msg_proj(msg_feat_text)             # (B, 32)
+
+        fused = torch.cat([map_feat, agent_feat, wave_feat, vec_feat, search_feat, prev_feat, msg_feat], dim=-1)
         trunk = self.fusion(fused)  # (B, hidden)
         return trunk
 

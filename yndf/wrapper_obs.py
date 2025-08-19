@@ -31,6 +31,7 @@ class NethackObsWrapper(gym.Wrapper):
             wavefront=gym.spaces.Box(low=-1, high=1, shape=(8,), dtype=np.int8),
             vector_fields=gym.spaces.Box(0, 1, shape=(MAX_FIELD, ), dtype=np.float32),
             search_scores=gym.spaces.Box(0, 1, shape=(7, 7), dtype=np.float32),
+            message = self.observation_space["message"],
         )
 
     def reset(self, **kwargs):  # type: ignore[override]
@@ -63,6 +64,7 @@ class NethackObsWrapper(gym.Wrapper):
             "wavefront": self._calculate_wavefront_hints(state),
             "vector_fields": self._get_vector_fields(state),
             "search_scores": search_scores,
+            "message": obs["message"],
         }
 
     def _get_vector_fields(self, state: NethackState) -> np.ndarray:
