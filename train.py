@@ -81,6 +81,18 @@ def derive_invariant_batch(args: 'PPOArgs') -> tuple[int, int, int, int, int]:
 
     return num_steps, num_minibatches, minibatch_size, batch_target, batch_actual
 
+def _masked_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Mask invalid positions in logits."""
+    m = mask.bool()
+    if m.ndim < logits.ndim:
+        # e.g., [E,9] -> broadcast over last dim of logits
+        m = m
+    invalid = ~m
+    if invalid.any():
+        min_val = torch.finfo(logits.dtype).min
+        logits = logits.masked_fill(invalid, min_val)
+    return logits
+
 # -------------------------
 # Storage (rollouts)
 # -------------------------
@@ -501,6 +513,12 @@ def train(args : PPOArgs) -> None:
 
     progress = tqdm(total=args.total_timesteps)
     while global_step < args.total_timesteps:
+        # Recurrent state for this rollout
+        rnn_state = policy.init_rnn_state(args.num_envs, device)
+        dones_prev = np.zeros(args.num_envs, dtype=np.bool_)  # used to build rnn_mask at t=0
+        # Store the per-step rnn_mask used at action time: shape [T,B]
+        rnn_masks_hist = np.zeros((args.num_steps, args.num_envs), dtype=np.float32)
+
         # Collect a rollout of num_steps
         t = 0
         while t < args.num_steps:
@@ -514,9 +532,13 @@ def train(args : PPOArgs) -> None:
                 verb_mask = torch.as_tensor(verb_mask_np, device=device, dtype=torch.bool)
                 dir_mask = torch.as_tensor(dir_mask_np, device=device, dtype=torch.bool)
 
+                # RNN mask for this step: reset rows where previous step ended
+                rnn_mask_t = torch.as_tensor((~dones_prev).astype(np.float32), device=device)
                 with torch.no_grad():
-                    act_verb_t, act_dir_t, logprob_t, value_t, _, _ = policy.get_action_and_value(
-                        obs_t, verb_mask, dir_mask, action_verb=None, action_dir=None, deterministic=False
+                    act_verb_t, act_dir_t, logprob_t, value_t, _, _, rnn_state = policy.get_action_and_value(
+                        obs_t, verb_mask, dir_mask,
+                        action_verb=None, action_dir=None, deterministic=False,
+                        rnn_state=rnn_state, rnn_mask=rnn_mask_t
                     )
                     act_verb = act_verb_t.cpu().numpy()
                     act_dir = act_dir_t.cpu().numpy()
@@ -525,6 +547,8 @@ def train(args : PPOArgs) -> None:
                     batch_idx = np.arange(args.num_envs)
                     dir_mask_selected = dir_mask_np[batch_idx, act_verb, :]  # (B,9)
                     requires_dir = dir_mask_selected.any(axis=1)
+                    # record the mask actually used at action time
+                    rnn_masks_hist[t] = rnn_mask_t.detach().cpu().numpy()
 
                 env_actions = pack_action_batch(act_verb, act_dir)
 
@@ -535,6 +559,7 @@ def train(args : PPOArgs) -> None:
                 progress.update(args.num_envs)
 
                 dones = np.logical_or(terminations, truncations)
+                dones_prev = dones
                 rb.add(
                     obs=obs_np,
                     action_verb=act_verb,
@@ -562,7 +587,8 @@ def train(args : PPOArgs) -> None:
 
             except (EOFError, BrokenPipeError) as exc:
                 LOG.exception("Vector env step failed (%s). Recovering and restarting rollout...", type(exc).__name__)
-                envs, next_obs = _recover_envs_and_restart_rollout(args, envs)
+                envs, next_obs, rnn_state, dones_prev, rnn_masks_hist = _recover_envs_and_restart_rollout(
+                                                                            args, envs, policy, device)
 
                 # discard current rollout and restart inner loop
                 rb = RolloutBuffer(args.num_steps, args.num_envs, obs_example=next_obs,
@@ -582,8 +608,11 @@ def train(args : PPOArgs) -> None:
             verb_mask_np, dir_mask_np = get_action_masks_batch(envs)
             verb_mask_final = torch.as_tensor(verb_mask_np, device=device, dtype=torch.bool)
             dir_mask_final = torch.as_tensor(dir_mask_np, device=device, dtype=torch.bool)
-            _, _, _, last_value_t, _, _ = policy.get_action_and_value(
-                obs_t_final, verb_mask_final, dir_mask_final, action_verb=None, action_dir=None, deterministic=True
+            rnn_mask_last = torch.as_tensor((~dones_prev).astype(np.float32), device=device)
+            _, _, _, last_value_t, _, _, _ = policy.get_action_and_value(
+                obs_t_final, verb_mask_final, dir_mask_final,
+                action_verb=None, action_dir=None, deterministic=True,
+                rnn_state=rnn_state, rnn_mask=rnn_mask_last
             )
             last_value = last_value_t.cpu().numpy()
 
@@ -594,30 +623,103 @@ def train(args : PPOArgs) -> None:
         adv = batch.advantages
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
-        # PPO update
-        bsz = batch.action_verb.shape[0]  # T*B
-        minibatch_size = bsz // args.num_minibatches
-        assert bsz % args.num_minibatches == 0, f"Batch {bsz} not divisible by num_minibatches {args.num_minibatches}"
-        idxs = np.arange(bsz)
+        # ---- Recurrent PPO update (sequence minibatches over envs) ----
+        T, B = args.num_steps, args.num_envs
+        # reshape helper: assumes rb.to_batches() stacks by time-major then env (t*B + b)
+        def tm(x: torch.Tensor) -> torch.Tensor:
+            return x.view(T, B, *x.shape[1:])
+        obs_tm: Dict[str, torch.Tensor] = {k: tm(v) for k, v in batch.obs.items()}
+        action_verb_tm = tm(batch.action_verb)           # [T,B]
+        action_dir_tm = tm(batch.action_dir)             # [T,B]
+        old_logprob_tm = tm(batch.old_logprob)           # [T,B]
+        values_tm = tm(batch.value)                      # [T,B]
+        returns_tm = tm(batch.returns)                   # [T,B]
+        adv_tm = tm(adv)                                 # [T,B]
+        verb_mask_tm = tm(batch.verb_mask)               # [T,B,A]
+        dir_mask_selected_tm = tm(batch.dir_mask_selected)  # [T,B,9]
+        rnn_masks_tm = torch.as_tensor(rnn_masks_hist, device=device, dtype=torch.float32)  # [T,B]
+
+        # env-wise minibatches
+        assert B % args.num_minibatches == 0, "num_envs must be divisible by num_minibatches for recurrent PPO."
+        env_mb = B // args.num_minibatches
 
         for _ in range(args.update_epochs):
-            np.random.shuffle(idxs)
-            for start in range(0, bsz, minibatch_size):
-                mb_idx = idxs[start : start + minibatch_size]
+            env_indices = np.arange(B)
+            np.random.shuffle(env_indices)
+            for start in range(0, B, env_mb):
+                env_idx = env_indices[start : start + env_mb]        # shape [E]
+                # init recurrent state for this minibatch (zeros, matches rollout init)
+                h, c = policy.init_rnn_state(len(env_idx), device)
+                flat_obs = {}
+                for k, v in obs_tm.items():
+                    # v: [T, B, ...] -> take env_idx -> [T, E, ...] -> flatten to [T*E, ...]
+                    flat = v[:, env_idx].contiguous()
+                    flat_obs[k] = flat.view(-1, *flat.shape[2:])  # [T*E, ...]
+                trunk_flat = policy.encode_trunk(flat_obs)               # [T*E, H]
+                H = trunk_flat.shape[-1]
+                trunk_seq = trunk_flat.view(T, -1, H).contiguous()       # [T, E, H]
 
-                mb_obs = {k: v[mb_idx] for k, v in batch.obs.items()}
-                mb_action_verb = batch.action_verb[mb_idx]
-                mb_action_dir = batch.action_dir[mb_idx]
-                mb_old_logprob = batch.old_logprob[mb_idx]
-                mb_adv = adv[mb_idx]
-                mb_returns = batch.returns[mb_idx]
-                mb_values = batch.value[mb_idx]
-                mb_verb_mask = batch.verb_mask[mb_idx]
-                mb_dir_mask_selected = batch.dir_mask_selected[mb_idx]
+                # Slice fixed tensors once
+                verb_mask_seq = verb_mask_tm[:, env_idx]                 # [T, E, A]
+                dir_mask_sel_seq = dir_mask_selected_tm[:, env_idx]      # [T, E, 9]
+                a_v_seq = action_verb_tm[:, env_idx]                     # [T, E]
+                a_d_seq = action_dir_tm[:, env_idx]                      # [T, E]
+                rnn_mask_seq = rnn_masks_tm[:, env_idx]                  # [T, E]
 
-                new_logprob, new_value, ent_verb, ent_dir, requires_dir = policy.evaluate_actions(
-                    mb_obs, mb_verb_mask, mb_dir_mask_selected, mb_action_verb, mb_action_dir
-                )
+                # Accumulators
+                new_logprob_steps, new_value_steps = [], []
+                ent_v_steps, ent_d_steps, req_dir_steps = [], [], []
+
+                # Step the LSTM while reusing trunk features
+                h0, c0 = h, c  # [1, E, H]
+                for t in range(T):
+                    # Apply reset mask: 1=keep, 0=reset
+                    keep = rnn_mask_seq[t].view(1, -1, 1)                # [1, E, 1]
+                    h0 = h0 * keep
+                    c0 = c0 * keep
+
+                    # One recurrent step
+                    out_t, (h0, c0) = policy.rnn(trunk_seq[t].unsqueeze(1), (h0, c0))  # in [E,1,H] -> out [E,1,H]
+                    feat_t = out_t.squeeze(1)                           # [E, H]
+
+                    # Heads
+                    verb_logits_t = policy.verb_head(feat_t)            # [E, A]
+                    verb_logits_t = _masked_logits(verb_logits_t, verb_mask_seq[t])
+                    verb_dist_t = torch.distributions.Categorical(logits=verb_logits_t)
+
+                    a_v_t = a_v_seq[t]
+                    logprob_v_t = verb_dist_t.log_prob(a_v_t)           # [E]
+                    ent_v_t = verb_dist_t.entropy()                     # [E]
+
+                    verb_emb_t = policy.verb_embedding(a_v_t).detach()  # [E, Eemb]
+                    dir_logits_t = policy.dir_head(torch.cat([feat_t, verb_emb_t], dim=-1))  # [E, 9]
+                    dir_logits_masked_t = _masked_logits(dir_logits_t, dir_mask_sel_seq[t])  # [E, 9]
+                    dir_dist_t = torch.distributions.Categorical(logits=dir_logits_masked_t)
+
+                    requires_dir_t = dir_mask_sel_seq[t].any(dim=-1)    # [E]
+                    a_d_t = a_d_seq[t].clamp(min=0)
+                    logprob_d_t = torch.where(requires_dir_t, dir_dist_t.log_prob(a_d_t), torch.zeros_like(logprob_v_t))
+                    ent_d_t = torch.where(requires_dir_t, dir_dist_t.entropy(), torch.zeros_like(ent_v_t))
+
+                    value_t = policy.value_head(feat_t).squeeze(-1)     # [E]
+
+                    new_logprob_steps.append(logprob_v_t + logprob_d_t)
+                    new_value_steps.append(value_t)
+                    ent_v_steps.append(ent_v_t)
+                    ent_d_steps.append(ent_d_t)
+                    req_dir_steps.append(requires_dir_t)
+
+                # Stack to [T,E] then flatten to [T*E]
+                new_logprob = torch.stack(new_logprob_steps, dim=0).reshape(-1)
+                new_value   = torch.stack(new_value_steps,    dim=0).reshape(-1)
+                ent_verb    = torch.stack(ent_v_steps,        dim=0).reshape(-1)
+                ent_dir     = torch.stack(ent_d_steps,        dim=0).reshape(-1)
+                requires_dir= torch.stack(req_dir_steps,      dim=0).reshape(-1)
+
+                mb_old_logprob = old_logprob_tm[:, env_idx].reshape(-1)
+                mb_adv         = adv_tm[:, env_idx].reshape(-1)
+                mb_returns     = returns_tm[:, env_idx].reshape(-1)
+                mb_values      = values_tm[:, env_idx].reshape(-1)
 
                 # Policy loss
                 logratio = new_logprob - mb_old_logprob
@@ -672,14 +774,17 @@ def train(args : PPOArgs) -> None:
     if writer is not None:
         writer.close()
 
-def _recover_envs_and_restart_rollout(args, envs):
-    """Close broken envs, recreate, reset, return (envs, next_obs)."""
+def _recover_envs_and_restart_rollout(args, envs, policy, device):
+    """Close broken envs, recreate, reset, return (envs, next_obs, rnn_state, dones_prev, rnn_masks_hist)."""
     # If you want unique RNG streams after a crash, pass a reseed offset into your thunks.
     # For example, change make_env_thunk to accept seed_offset and do: base_seed + seed_offset + i
     envs = _create_envs(args)
     next_obs, _ = envs.reset()
+    rnn_state = policy.init_rnn_state(args.num_envs, device)
+    dones_prev = np.zeros(args.num_envs, dtype=np.bool_)
+    rnn_masks_hist = np.zeros((args.num_steps, args.num_envs), dtype=np.float32)
     LOG.warning("Recovered vector envs. Discarded current rollout.")
-    return envs, next_obs
+    return envs, next_obs, rnn_state, dones_prev, rnn_masks_hist
 
 def _create_envs(args):
     if args.num_envs > 1:

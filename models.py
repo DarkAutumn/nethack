@@ -138,6 +138,63 @@ class NethackPolicy(nn.Module):
             nn.ReLU(inplace=True),
         )
 
+        self.rnn = nn.LSTM(
+            input_size=self.trunk_hidden_dim,
+            hidden_size=self.trunk_hidden_dim,
+            num_layers=1,
+            batch_first=True,
+        )
+
+    def init_rnn_state(self, batch_size: int, device: torch.device | str) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return zero (h, c) with shapes (num_layers, B, H)."""
+        dev = torch.device(device)
+        h = torch.zeros(1, batch_size, self.trunk_hidden_dim, device=dev)
+        c = torch.zeros(1, batch_size, self.trunk_hidden_dim, device=dev)
+        return h, c
+
+    @staticmethod
+    def _mask_rnn_state(
+        state: tuple[torch.Tensor, torch.Tensor],
+        mask: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """mask: Bool/Float [B]. 1=keep, 0=reset. Returns (h*, c*) with shape [L=1, B, H]."""
+        if mask is None:
+            return state
+        h, c = state  # both [1, B, H]
+        m = mask.float()
+        if m.dim() == 0:
+            # single element -> shape [1,1,1]
+            m = m.view(1, 1, 1)
+        elif m.dim() == 1:
+            # [B] -> [1,B,1]
+            m = m.view(1, -1, 1)
+        elif m.dim() == 2:
+            # [1,B] -> [1,B,1]
+            m = m.unsqueeze(-1)
+        else:
+            # fallback: take batch as last known dim
+            m = m.view(1, m.shape[-1], 1)
+        return h * m, c * m
+
+    def _apply_rnn(self,
+                trunk_step: torch.Tensor,
+                rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+                rnn_mask: Optional[torch.Tensor]) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        """
+        trunk_step: (B, H) fused features for the *current* step.
+        rnn_state:  (h, c) or None → zeros.
+        rnn_mask:   [B] 1=keep state, 0=reset this batch element.
+        Returns: (B, H) updated features and next (h, c).
+        """
+        B = trunk_step.size(0)
+        if rnn_state is None:
+            h0, c0 = self.init_rnn_state(B, trunk_step.device)
+        else:
+            h0, c0 = self._mask_rnn_state(rnn_state, rnn_mask)
+        # Add time dimension (sequence length = 1)
+        out, (h1, c1) = self.rnn(trunk_step.unsqueeze(1), (h0, c0))  # out: [B,1,H]
+        return out.squeeze(1), (h1, c1)
+
     @staticmethod
     def _normalize_agent_coords(agent_yx: torch.Tensor, height: int, width: int) -> torch.Tensor:
         # agent_yx is (B,2) with [y, x] in [0..H-1], [0..W-1]
@@ -229,184 +286,97 @@ class NethackPolicy(nn.Module):
         trunk = self.fusion(fused)  # (B, hidden)
         return trunk
 
-    def forward(self, obs: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self,
+                obs: Dict[str, torch.Tensor],
+                rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+                rnn_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass for encoding observations."""
         trunk = self.encode_trunk(obs)
-        verb_logits = self.verb_head(trunk)  # (B, A)
-        value = self.value_head(trunk).squeeze(-1)  # (B,)
-        # Direction logits require a chosen verb; we return a 'template' projected with a neutral verb embedding (zeros)
-        # to enable optional analysis; normal action selection should call get_action_and_value(...)
+        trunk, next_state = self._apply_rnn(trunk, rnn_state, rnn_mask)
+        verb_logits = self.verb_head(trunk)
+        value = self.value_head(trunk).squeeze(-1)
         neutral_emb = torch.zeros((trunk.size(0), self.verb_embed_dim), device=trunk.device, dtype=trunk.dtype)
-        dir_logits = self.dir_head(torch.cat([trunk, neutral_emb], dim=-1))  # (B, 9)
-        return verb_logits, dir_logits, value
+        dir_logits = self.dir_head(torch.cat([trunk, neutral_emb], dim=-1))
+        return verb_logits, dir_logits, value, next_state
 
     def get_action_and_value(
-        self,
-        obs: Dict[str, torch.Tensor],
-        verb_mask: torch.Tensor,          # (B, A) bool
-        dir_mask_per_verb: torch.Tensor,  # (B, A, 9) bool; row all-False means 'no direction arg' for that verb
-        action_verb: Optional[torch.Tensor] = None,   # (B,)
-        action_dir: Optional[torch.Tensor] = None,    # (B,)
-        deterministic: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Sample (or evaluate) actions and return logprobs and value.
+            self,
+            obs: Dict[str, torch.Tensor],
+            verb_mask: torch.Tensor,
+            dir_mask_per_verb: torch.Tensor,
+            rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+            rnn_mask: Optional[torch.Tensor] = None,
+            action_verb: Optional[torch.Tensor] = None,
+            action_dir: Optional[torch.Tensor] = None,
+            deterministic: bool = False,
+        ):
+        trunk = self.encode_trunk(obs)
+        trunk, next_state = self._apply_rnn(trunk, rnn_state, rnn_mask)
 
-        Returns:
-            action_verb: (B,)
-            action_dir:  (B,)  (-1 where no direction required)
-            logprob_sum:(B,)  log pi(a) + [log pi(d | a) if required]
-            value:      (B,)
-            entropy_verb:(B,)
-            entropy_dir: (B,)  (0 where dir not required)
-        """
-        trunk = self.encode_trunk(obs)  # (B, hidden)
-
-        # Verb distribution (masked)
-        verb_logits = self.verb_head(trunk)  # (B, A)
+        verb_logits = self.verb_head(trunk)
         verb_logits = _masked_logits(verb_logits, verb_mask)
         verb_dist = torch.distributions.Categorical(logits=verb_logits)
 
         if action_verb is None:
-            if deterministic:
-                action_verb = torch.argmax(verb_logits, dim=-1)
-            else:
-                action_verb = verb_dist.sample()
+            action_verb = torch.argmax(verb_logits, dim=-1) if deterministic else verb_dist.sample()
         logprob_verb = verb_dist.log_prob(action_verb)
         entropy_verb = verb_dist.entropy()
 
-        # Direction distribution conditioned on chosen verb
         batch = trunk.shape[0]
-        verb_emb = self.verb_embedding(action_verb).detach()  # stop-gradient trick
-        dir_logits = self.dir_head(torch.cat([trunk, verb_emb], dim=-1))  # (B, 9)
+        verb_emb = self.verb_embedding(action_verb).detach()
+        dir_logits = self.dir_head(torch.cat([trunk, verb_emb], dim=-1))
 
-        # Gather the direction mask row for each chosen verb
         batch_idx = torch.arange(batch, device=trunk.device)
-        dir_mask = dir_mask_per_verb[batch_idx, action_verb]  # (B, 9) bool
-        requires_dir = dir_mask.any(dim=-1)  # (B,)
+        dir_mask = dir_mask_per_verb[batch_idx, action_verb]
+        requires_dir = dir_mask.any(dim=-1)
 
-        # For samples that require a direction, create a masked categorical
         dir_logits_masked = _masked_logits(dir_logits, dir_mask)
         dir_dist = torch.distributions.Categorical(logits=dir_logits_masked)
 
         if action_dir is None:
-            # If no direction required, set to -1 (sentinel); else sample/argmax
-            if deterministic:
-                sampled = torch.argmax(dir_logits_masked, dim=-1)
-            else:
-                sampled = dir_dist.sample()
+            sampled = torch.argmax(dir_logits_masked, dim=-1) if deterministic else dir_dist.sample()
             action_dir = torch.where(requires_dir, sampled, torch.full_like(sampled, -1))
 
-        # Logprob and entropy: zero where dir not required
-        logprob_dir = torch.where(
-            requires_dir,
-            dir_dist.log_prob(action_dir.clamp(min=0)),  # clamp harmless when requires_dir False
-            torch.zeros_like(logprob_verb),
-        )
-        entropy_dir = torch.where(
-            requires_dir,
-            dir_dist.entropy(),
-            torch.zeros_like(entropy_verb),
-        )
+        logprob_dir = torch.where(requires_dir, dir_dist.log_prob(action_dir.clamp(min=0)),
+                                  torch.zeros_like(logprob_verb))
+        entropy_dir = torch.where(requires_dir, dir_dist.entropy(), torch.zeros_like(entropy_verb))
 
         logprob_sum = logprob_verb + logprob_dir
         value = self.value_head(trunk).squeeze(-1)
-        return action_verb, action_dir, logprob_sum, value, entropy_verb, entropy_dir
+        return action_verb, action_dir, logprob_sum, value, entropy_verb, entropy_dir, next_state
 
     def evaluate_actions(
         self,
         obs: Dict[str, torch.Tensor],
-        verb_mask: torch.Tensor,          # (B, A) bool at the time actions were taken
-        dir_mask_selected: torch.Tensor,  # (B, 9) bool (mask row for the chosen verb at that time)
-        action_verb: torch.Tensor,        # (B,)
-        action_dir: torch.Tensor,         # (B,) -1 if no dir required
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute logprobs and entropies for a batch of given actions (for PPO updates).
-
-        Returns:
-            logprob_sum: (B,)
-            value:       (B,)
-            entropy_verb:(B,)
-            entropy_dir: (B,) (0 where not required)
-            requires_dir:(B,) bool
-        """
+        verb_mask: torch.Tensor,
+        dir_mask_selected: torch.Tensor,
+        action_verb: torch.Tensor,
+        action_dir: torch.Tensor,
+        rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+        rnn_mask: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         trunk = self.encode_trunk(obs)
+        trunk, next_state = self._apply_rnn(trunk, rnn_state, rnn_mask)
 
-        # Verb
         verb_logits = self.verb_head(trunk)
         verb_logits = _masked_logits(verb_logits, verb_mask)
         verb_dist = torch.distributions.Categorical(logits=verb_logits)
         logprob_verb = verb_dist.log_prob(action_verb)
         entropy_verb = verb_dist.entropy()
 
-        # Dir conditioned on given verb
         verb_emb = self.verb_embedding(action_verb).detach()
-        dir_logits = self.dir_head(torch.cat([trunk, verb_emb], dim=-1))  # (B,9)
+        dir_logits = self.dir_head(torch.cat([trunk, verb_emb], dim=-1))
 
         requires_dir = dir_mask_selected.any(dim=-1)
         dir_logits_masked = _masked_logits(dir_logits, dir_mask_selected)
         dir_dist = torch.distributions.Categorical(logits=dir_logits_masked)
 
-        logprob_dir = torch.where(
-            requires_dir,
-            dir_dist.log_prob(action_dir.clamp(min=0)),
-            torch.zeros_like(logprob_verb),
-        )
-        entropy_dir = torch.where(
-            requires_dir,
-            dir_dist.entropy(),
-            torch.zeros_like(entropy_verb),
-        )
+        logprob_dir = torch.where(requires_dir, dir_dist.log_prob(action_dir.clamp(min=0)), torch.zeros_like(logprob_verb))
+        entropy_dir = torch.where(requires_dir, dir_dist.entropy(), torch.zeros_like(entropy_verb))
 
         logprob_sum = logprob_verb + logprob_dir
         value = self.value_head(trunk).squeeze(-1)
-        return logprob_sum, value, entropy_verb, entropy_dir, requires_dir
-
-    @torch.inference_mode()
-    def get_action_probabilities(
-        self,
-        obs: Dict[str, torch.Tensor],
-        verb_mask: torch.Tensor,          # (B, A) bool
-        dir_mask_per_verb: torch.Tensor,  # (B, A, 9) bool
-        temperature: float = 1.0,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-          per_verb_probs:          (B, A)      softmax over *unmasked* verbs (masked -> prob 0)
-          per_verb_dir_probs:      (B, A, 9)   for each verb, softmax over *unmasked* directions;
-                                              rows with no dir required -> all zeros
-          requires_dir_per_verb:   (B, A) bool convenience mask (any dir available?)
-        """
-        assert temperature > 0, "temperature must be > 0"
-        trunk = self.encode_trunk(obs)  # (B, hidden)
-        batch, verbs = trunk.shape[0], self.num_verbs
-
-        # ---- Verb probs (masked softmax) ----
-        verb_logits = self.verb_head(trunk) / temperature  # (B, A)
-        verb_logits = _masked_logits(verb_logits, verb_mask)  # invalid -> large negative
-        per_verb_probs = F.softmax(verb_logits, dim=-1) * verb_mask.float()  # zero out masked exactly
-
-        # ---- Direction probs for every verb (vectorized) ----
-        # Build (B, A, hidden+emb) then run dir_head on (B*A, ...)
-        all_verbs = torch.arange(verbs, device=trunk.device)
-        verb_emb_table = self.verb_embedding(all_verbs)  # (A, E)
-
-        trunk_exp = trunk.unsqueeze(1).expand(-1, verbs, -1)            # (B, A, hidden)
-        verb_emb_exp = verb_emb_table.unsqueeze(0).expand(batch, -1, -1)  # (B, A, E)
-        dir_in = torch.cat([trunk_exp, verb_emb_exp], dim=-1)       # (B, A, hidden+E)
-
-        dir_logits_all = self.dir_head(dir_in.reshape(batch * verbs, -1))   # (B*A, 9)
-        dir_logits_all = (dir_logits_all / temperature).reshape(batch, verbs, DIRECTION_COUNT)  # (B, A, 9)
-
-        # Mask per-verb directions and softmax along last dim
-        requires_dir_per_verb = dir_mask_per_verb.any(dim=-1)  # (B, A) bool
-        dir_logits_masked = _masked_logits(dir_logits_all, dir_mask_per_verb)  # (B, A, 9)
-        per_verb_dir_probs = F.softmax(dir_logits_masked, dim=-1)
-        # Zero out masked entries exactly, and zero out verbs that don't require a direction
-        per_verb_dir_probs = per_verb_dir_probs * dir_mask_per_verb.float()
-        per_verb_dir_probs = per_verb_dir_probs * requires_dir_per_verb.unsqueeze(-1).float()
-
-        return per_verb_probs, per_verb_dir_probs, requires_dir_per_verb
-
+        return logprob_sum, value, entropy_verb, entropy_dir, requires_dir, next_state
 
 # -------------------------
 # SB3-callback compatibility adapters
@@ -456,8 +426,10 @@ class ModelSaver:
         return torch.load(path, map_location=device)
 
     @staticmethod
-    def load_as_inference(path: str, policy_builder: Callable[[dict[str, Any]], nn.Module],
-                          device: str | torch.device = "cpu") -> "InferenceAdapter":
+    def load_as_inference(path: str,
+                          policy_builder: Callable[[dict[str, Any]], nn.Module],
+                          device: str | torch.device = "cpu",
+                          n_envs: int = 1) -> "InferenceAdapter":
         """
         High-level: build a policy via `policy_builder(args_dict)`,
         load weights, and wrap with an SB3-like .predict().
@@ -467,17 +439,21 @@ class ModelSaver:
         policy = policy_builder(args_dict).to(device)
         policy.load_state_dict(ckpt["policy_state_dict"])
         policy.eval()
-        return InferenceAdapter(policy, device=device)
+        adapter = InferenceAdapter(policy, device=device)
+        adapter.reset(n_envs=n_envs)
+        return adapter
 
 
 class InferenceAdapter:
-    """SB3-like wrapper: exposes .predict(obs, deterministic=False, action_masks=None).
-    If your policy has .act(obs, action_mask=..., deterministic=...), that's used.
-    Otherwise we assume policy(obs) -> logits for a Discrete action space.
+    """SB3-like wrapper with recurrent state.
+    - Maintains (h, c) across .predict() calls.
+    - Accepts per-env dones to reset state rows.
     """
     def __init__(self, policy: nn.Module, device: str | torch.device = "cpu") -> None:
         self.policy = policy
         self.device = torch.device(device)
+        self.rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]] = None  # (h, c) with shapes (1, B, H)
+        self._num_envs: Optional[int] = None
 
     @staticmethod
     def _to_tensor(x: Any, device: torch.device, unsqueeze: bool = False) -> Any:
@@ -503,10 +479,63 @@ class InferenceAdapter:
 
         return result
 
+    def reset(self, n_envs: Optional[int] = None) -> None:
+        """Reset the recurrent state. If n_envs is given, re-init to that batch size."""
+        if n_envs is not None:
+            self._num_envs = int(n_envs)
+            self.rnn_state = self.policy.init_rnn_state(self._num_envs, self.device)
+        else:
+            self.rnn_state = None
+
+    def reset_done(self, dones: Any) -> None:
+        """Reset only rows where dones==True."""
+        if self.rnn_state is None:
+            return
+        d = torch.as_tensor(dones, device=self.device).bool().view(-1)  # [B]
+        if d.any():
+            # rnn_mask 1=keep, 0=reset
+            keep = (~d).float().view(1, -1, 1)  # [1,B,1]
+            h, c = self.rnn_state
+            self.rnn_state = (h * keep, c * keep)
+
+    @staticmethod
+    def _batch_size_from_obs(obs_t: Any) -> int:
+        if isinstance(obs_t, dict):
+            for v in obs_t.values():
+                if torch.is_tensor(v) and v.dim() >= 1:
+                    return int(v.shape[0])
+        if torch.is_tensor(obs_t) and obs_t.dim() >= 1:
+            return int(obs_t.shape[0])
+        raise ValueError("Cannot infer batch size from obs.")
+
     @torch.inference_mode()
-    def predict(self, obs: Any, deterministic: bool, action_masks : Tuple[torch.tensor, torch.tensor], unsqueeze):
+    def predict(self,
+                obs: Any,
+                deterministic: bool,
+                action_masks: Tuple[torch.Tensor, torch.Tensor] | None,
+                unsqueeze: bool,
+                dones: Any | None = None,
+                force_reset: bool = False) -> Tuple[Tuple[int, int], Any]:
         """Mimics stable baselines behavior."""
         obs_t = InferenceAdapter._to_tensor(obs, self.device, unsqueeze)
+
+        # Infer batch size and ensure rnn_state exists and matches shape
+        batch_size = self._batch_size_from_obs(obs_t)
+        if self.rnn_state is None or force_reset:
+            self._num_envs = batch_size
+            self.rnn_state = self.policy.init_rnn_state(batch_size, self.device)
+        else:
+            # If batch size changed, re-init
+            h, _ = self.rnn_state
+            if h.size(1) != batch_size:
+                self._num_envs = batch_size
+                self.rnn_state = self.policy.init_rnn_state(batch_size, self.device)
+        # Build rnn_mask: 1=keep, 0=reset
+        if dones is None:
+            rnn_mask = torch.ones(batch_size, device=self.device, dtype=torch.float32)
+        else:
+            d = torch.as_tensor(dones, device=self.device).bool().view(-1)
+            rnn_mask = (~d).float()
 
         verb_mask_t: Optional[torch.Tensor] = None
         dir_mask_t: Optional[torch.Tensor] = None
@@ -515,14 +544,23 @@ class InferenceAdapter:
             verb_mask_t = InferenceAdapter._to_tensor(verb_mask_t, self.device, unsqueeze)
             dir_mask_t = InferenceAdapter._to_tensor(dir_mask_t, self.device, unsqueeze)
 
-        act_verb_t, act_dir_t, _, _, _, _ = self.policy.get_action_and_value(
+        ret = self.policy.get_action_and_value(
             obs_t,
             verb_mask_t,
             dir_mask_t,
             action_verb=None,
             action_dir=None,
             deterministic=deterministic,
+            rnn_state=self.rnn_state,
+            rnn_mask=rnn_mask,
         )
+
+        # Support both 6-tuple (old) and 7-tuple (new with next_state)
+        if isinstance(ret, tuple) and len(ret) == 7:
+            act_verb_t, act_dir_t, _, _, _, _, next_state = ret
+            self.rnn_state = next_state
+        else:
+            act_verb_t, act_dir_t, _, _, _, _ = ret  # keep prior state
 
         act_verb = act_verb_t.detach().cpu().item()
         act_dir = act_dir_t.detach().cpu().item()
