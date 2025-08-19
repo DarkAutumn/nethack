@@ -1,0 +1,6 @@
+- Don't send agent to touch traps.
+- Food
+- Far-Move
+- Long wait
+- ascend stairs
+- Improve model for other commands (messages, previous commands, etc)
