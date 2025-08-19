@@ -53,6 +53,7 @@ class NethackPolicy(nn.Module):
         glyph_vocab_size: int = 6000,
         glyph_embed_dim: int = 32,
         trunk_hidden_dim: int = 256,
+        rnn_hidden_dim: int = 128,
         verb_embed_dim: int = 32,
         use_agent_onehot: bool = True,
     ) -> None:
@@ -61,6 +62,7 @@ class NethackPolicy(nn.Module):
         self.glyph_vocab_size = glyph_vocab_size
         self.glyph_embed_dim = glyph_embed_dim
         self.trunk_hidden_dim = trunk_hidden_dim
+        self.rnn_hidden_dim = rnn_hidden_dim
         self.verb_embed_dim = verb_embed_dim
         self.use_agent_onehot = use_agent_onehot
 
@@ -124,7 +126,7 @@ class NethackPolicy(nn.Module):
             nn.Linear(32, 32),
             nn.ReLU(inplace=True),
         )
-        self.msg_byte_embed = nn.Embedding(255, 16)
+        self.msg_byte_embed = nn.Embedding(256, 16)
         self.msg_cnn = nn.Sequential(
             nn.Conv1d(16, 64, kernel_size=5, padding=2),
             nn.ReLU(inplace=True),
@@ -138,47 +140,33 @@ class NethackPolicy(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        self.rnn = nn.LSTM(
-            input_size=self.trunk_hidden_dim,
-            hidden_size=self.trunk_hidden_dim,
+        self.pre_rnn  = nn.Linear(self.trunk_hidden_dim, self.rnn_hidden_dim)
+        self.rnn = nn.GRU(
+            input_size=self.rnn_hidden_dim,
+            hidden_size=self.rnn_hidden_dim,
             num_layers=1,
             batch_first=True,
         )
+        self.post_rnn = nn.Linear(self.rnn_hidden_dim, self.trunk_hidden_dim)
 
-    def init_rnn_state(self, batch_size: int, device: torch.device | str) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return zero (h, c) with shapes (num_layers, B, H)."""
-        dev = torch.device(device)
-        h = torch.zeros(1, batch_size, self.trunk_hidden_dim, device=dev)
-        c = torch.zeros(1, batch_size, self.trunk_hidden_dim, device=dev)
-        return h, c
+    def init_rnn_state(self, batch_size, device) -> torch.Tensor:
+        return torch.zeros(1, batch_size, self.rnn_hidden_dim, device=device)
 
-    @staticmethod
-    def _mask_rnn_state(
-        state: tuple[torch.Tensor, torch.Tensor],
-        mask: torch.Tensor | None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """mask: Bool/Float [B]. 1=keep, 0=reset. Returns (h*, c*) with shape [L=1, B, H]."""
+    def _mask_rnn_state(self, state: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
         if mask is None:
             return state
-        h, c = state  # both [1, B, H]
         m = mask.float()
         if m.dim() == 0:
-            # single element -> shape [1,1,1]
             m = m.view(1, 1, 1)
         elif m.dim() == 1:
-            # [B] -> [1,B,1]
             m = m.view(1, -1, 1)
         elif m.dim() == 2:
-            # [1,B] -> [1,B,1]
             m = m.unsqueeze(-1)
-        else:
-            # fallback: take batch as last known dim
-            m = m.view(1, m.shape[-1], 1)
-        return h * m, c * m
+        return state * m
 
     def _apply_rnn(self,
                 trunk_step: torch.Tensor,
-                rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+                rnn_state: Optional[torch.Tensor],
                 rnn_mask: Optional[torch.Tensor]) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """
         trunk_step: (B, H) fused features for the *current* step.
@@ -187,13 +175,11 @@ class NethackPolicy(nn.Module):
         Returns: (B, H) updated features and next (h, c).
         """
         B = trunk_step.size(0)
-        if rnn_state is None:
-            h0, c0 = self.init_rnn_state(B, trunk_step.device)
-        else:
-            h0, c0 = self._mask_rnn_state(rnn_state, rnn_mask)
-        # Add time dimension (sequence length = 1)
-        out, (h1, c1) = self.rnn(trunk_step.unsqueeze(1), (h0, c0))  # out: [B,1,H]
-        return out.squeeze(1), (h1, c1)
+        h0 = self.init_rnn_state(B, trunk_step.device) if rnn_state is None else self._mask_rnn_state(rnn_state, rnn_mask)
+        x = self.pre_rnn(trunk_step).unsqueeze(1)      # [B,1,rnn_hidden_dim]
+        out, h1 = self.rnn(x, h0)                      # out [B,1,rnn_hidden_dim], h1 [1,B,rnn_hidden_dim]
+        feat = self.post_rnn(out.squeeze(1))           # back to trunk_hidden_dim
+        return feat, h1
 
     @staticmethod
     def _normalize_agent_coords(agent_yx: torch.Tensor, height: int, width: int) -> torch.Tensor:
@@ -288,7 +274,7 @@ class NethackPolicy(nn.Module):
 
     def forward(self,
                 obs: Dict[str, torch.Tensor],
-                rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+                rnn_state: Optional[torch.Tensor],
                 rnn_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass for encoding observations."""
         trunk = self.encode_trunk(obs)
@@ -304,7 +290,7 @@ class NethackPolicy(nn.Module):
             obs: Dict[str, torch.Tensor],
             verb_mask: torch.Tensor,
             dir_mask_per_verb: torch.Tensor,
-            rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+            rnn_state: Optional[torch.Tensor],
             rnn_mask: Optional[torch.Tensor] = None,
             action_verb: Optional[torch.Tensor] = None,
             action_dir: Optional[torch.Tensor] = None,
@@ -352,7 +338,7 @@ class NethackPolicy(nn.Module):
         dir_mask_selected: torch.Tensor,
         action_verb: torch.Tensor,
         action_dir: torch.Tensor,
-        rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+        rnn_state: Optional[torch.Tensor],
         rnn_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         trunk = self.encode_trunk(obs)
@@ -452,7 +438,7 @@ class InferenceAdapter:
     def __init__(self, policy: nn.Module, device: str | torch.device = "cpu") -> None:
         self.policy = policy
         self.device = torch.device(device)
-        self.rnn_state: Optional[tuple[torch.Tensor, torch.Tensor]] = None  # (h, c) with shapes (1, B, H)
+        self.rnn_state: Optional[torch.Tensor] = None  # (h, c) with shapes (1, B, H)
         self._num_envs: Optional[int] = None
 
     @staticmethod
@@ -495,8 +481,7 @@ class InferenceAdapter:
         if d.any():
             # rnn_mask 1=keep, 0=reset
             keep = (~d).float().view(1, -1, 1)  # [1,B,1]
-            h, c = self.rnn_state
-            self.rnn_state = (h * keep, c * keep)
+            self.rnn_state = self.rnn_state * keep
 
     @staticmethod
     def _batch_size_from_obs(obs_t: Any) -> int:

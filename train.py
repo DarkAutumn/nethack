@@ -82,16 +82,13 @@ def derive_invariant_batch(args: 'PPOArgs') -> tuple[int, int, int, int, int]:
     return num_steps, num_minibatches, minibatch_size, batch_target, batch_actual
 
 def _masked_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Mask invalid positions in logits."""
-    m = mask.bool()
-    if m.ndim < logits.ndim:
-        # e.g., [E,9] -> broadcast over last dim of logits
-        m = m
+    """True = valid, False = invalid. Mask can be broadcastable to logits."""
+    m = mask.to(dtype=torch.bool, device=logits.device)
     invalid = ~m
     if invalid.any():
-        min_val = torch.finfo(logits.dtype).min
-        logits = logits.masked_fill(invalid, min_val)
+        logits = logits.masked_fill(invalid, torch.finfo(logits.dtype).min)
     return logits
+
 
 # -------------------------
 # Storage (rollouts)
@@ -649,7 +646,7 @@ def train(args : PPOArgs) -> None:
             for start in range(0, B, env_mb):
                 env_idx = env_indices[start : start + env_mb]        # shape [E]
                 # init recurrent state for this minibatch (zeros, matches rollout init)
-                h, c = policy.init_rnn_state(len(env_idx), device)
+                h = policy.init_rnn_state(len(env_idx), device)
                 flat_obs = {}
                 for k, v in obs_tm.items():
                     # v: [T, B, ...] -> take env_idx -> [T, E, ...] -> flatten to [T*E, ...]
@@ -671,16 +668,12 @@ def train(args : PPOArgs) -> None:
                 ent_v_steps, ent_d_steps, req_dir_steps = [], [], []
 
                 # Step the LSTM while reusing trunk features
-                h0, c0 = h, c  # [1, E, H]
                 for t in range(T):
                     # Apply reset mask: 1=keep, 0=reset
-                    keep = rnn_mask_seq[t].view(1, -1, 1)                # [1, E, 1]
-                    h0 = h0 * keep
-                    c0 = c0 * keep
-
-                    # One recurrent step
-                    out_t, (h0, c0) = policy.rnn(trunk_seq[t].unsqueeze(1), (h0, c0))  # in [E,1,H] -> out [E,1,H]
-                    feat_t = out_t.squeeze(1)                           # [E, H]
+                    keep = rnn_mask_seq[t].view(1, -1, 1)
+                    h = h * keep
+                    out_t, h = policy.rnn(policy.pre_rnn(trunk_seq[t]).unsqueeze(1), h)
+                    feat_t = policy.post_rnn(out_t.squeeze(1))
 
                     # Heads
                     verb_logits_t = policy.verb_head(feat_t)            # [E, A]
