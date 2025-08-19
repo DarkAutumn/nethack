@@ -41,6 +41,7 @@ class NethackPolicy(nn.Module):
       - wavefront: Float[B, 8] (directional features; e.g., rays/occupancy/LOS cues)
       - vector_fields: Float[B, F] (scalar global features)
       - search_scores: Float[B, 7, 7]
+      - prev_action:   Long[B, 2]  (prev_verb, prev_dir). Accepts sentinel (-1) or “last index” coding.
 
     The model does not assume fixed H, W but is tuned to ~21x79.
     """
@@ -99,9 +100,9 @@ class NethackPolicy(nn.Module):
 
         # --- Fusion MLP to trunk ---
         #  We'll infer vector_fields dim and build a fusion layer on first call if dims mismatch
-        # [map]64 + [agent]32 + [wave]32 + [vec]32 + [search]64
+        # [map]64 + [agent]32 + [wave]32 + [vec]32 + [search]64 + [prev_action]32
         self.fusion = nn.Sequential(
-            nn.Linear(64 + 32 + 32 + 32 + 64, self.trunk_hidden_dim),
+            nn.Linear(64 + 32 + 32 + 32 + 64 + 32, self.trunk_hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(self.trunk_hidden_dim, self.trunk_hidden_dim),
             nn.ReLU(inplace=True),
@@ -116,6 +117,12 @@ class NethackPolicy(nn.Module):
             nn.Linear(self.trunk_hidden_dim // 2, DIRECTION_COUNT),
         )
         self.value_head = nn.Linear(self.trunk_hidden_dim, 1)
+        self.prev_verb_emb = nn.Embedding(self.num_verbs + 1, 16)
+        self.prev_dir_emb  = nn.Embedding(DIRECTION_COUNT + 1, 16)
+        self.fc_prev_action = nn.Sequential(
+            nn.Linear(32, 32),
+            nn.ReLU(inplace=True),
+        )
 
     @staticmethod
     def _normalize_agent_coords(agent_yx: torch.Tensor, height: int, width: int) -> torch.Tensor:
@@ -170,6 +177,7 @@ class NethackPolicy(nn.Module):
         wavefront = obs["wavefront"].float()
         vector_fields = obs["vector_fields"].float()
         search_scores = obs["search_scores"].float()
+        prev_action = obs["prev_action"].long()
 
         batch, height, width = glyphs.shape
         map_feat = self._encode_map(glyphs, visited, agent_yx)  # (B,64)
@@ -185,7 +193,18 @@ class NethackPolicy(nn.Module):
         search_flat = search_scores.view(batch, -1)
         search_feat = self.fc_search(search_flat)  # (B,64)
 
-        fused = torch.cat([map_feat, agent_feat, wave_feat, vec_feat, search_feat], dim=-1)  # (B,224)
+        # Accept either: negative sentinel (-1) or "last index" sentinel.
+        prev_verb_raw = prev_action[..., 0]
+        prev_dir_raw  = prev_action[..., 1]
+        prev_verb_idx = torch.where(prev_verb_raw >= 0, prev_verb_raw,
+                                    torch.full_like(prev_verb_raw, self.num_verbs))
+        prev_dir_idx  = torch.where(prev_dir_raw >= 0, prev_dir_raw,
+                                    torch.full_like(prev_dir_raw, DIRECTION_COUNT))
+        prev_verb_vec = self.prev_verb_emb(prev_verb_idx)  # (B,16)
+        prev_dir_vec  = self.prev_dir_emb(prev_dir_idx)    # (B,16)
+        prev_feat = self.fc_prev_action(torch.cat([prev_verb_vec, prev_dir_vec], dim=-1))  # (B,32)
+
+        fused = torch.cat([map_feat, agent_feat, wave_feat, vec_feat, search_feat, prev_feat], dim=-1)  # (B,224)
         trunk = self.fusion(fused)  # (B, hidden)
         return trunk
 
