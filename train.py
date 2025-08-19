@@ -674,11 +674,6 @@ def train(args : PPOArgs) -> None:
 
 def _recover_envs_and_restart_rollout(args, envs):
     """Close broken envs, recreate, reset, return (envs, next_obs)."""
-    try:
-        envs.close()
-    except Exception:  # pylint: disable=broad-except
-        pass
-
     # If you want unique RNG streams after a crash, pass a reseed offset into your thunks.
     # For example, change make_env_thunk to accept seed_offset and do: base_seed + seed_offset + i
     envs = _create_envs(args)
