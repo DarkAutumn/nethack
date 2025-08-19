@@ -137,23 +137,32 @@ class RolloutBuffer:
         self.dir_mask_selected.append(np.asarray(dir_mask_selected))
         self.requires_dir.append(np.asarray(requires_dir))
 
-    def compute_gae(self, last_value: np.ndarray, gamma: float, gae_lambda: float) -> Tuple[np.ndarray, np.ndarray]:
-        """Compute generalized advantage estimation (GAE)."""
-        t = len(self.rewards)
-        b = self.rewards[0].shape[0]
-        advantages = np.zeros((t, b), dtype=np.float32)
-        lastgaelam = np.zeros((b,), dtype=np.float32)
-        for t in reversed(range(t)):
-            nextnonterminal = 1.0 - self.dones[t].astype(np.float32)
-            next_values = last_value if t == t - 1 else self.value[t + 1]
-            float_rewards = self.rewards[t].astype(np.float32)
-            delta = float_rewards + gamma * next_values * nextnonterminal - self.value[t].astype(np.float32)
-            lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
-            advantages[t] = lastgaelam
+    def compute_gae(self, last_value: np.ndarray, gamma: float, gae_lambda: float) -> None:
+        """Compute Generalized Advantage Estimation (GAE)."""
+        time_steps = len(self.rewards)   # T
+        batch = self.rewards[0].shape[0] # B
 
-        returns = advantages + np.asarray(self.value, dtype=np.float32)
-        self._advantages_np = advantages
-        self._returns_np = returns
+        # stack and coerce shapes
+        values = np.stack(self.value, axis=0).astype(np.float32)           # (T,B) or (T,B,1)
+        if values.ndim == 3 and values.shape[-1] == 1:
+            values = values[..., 0]
+        rewards = np.stack(self.rewards, axis=0).astype(np.float32)        # (T,B)
+        dones = np.stack(self.dones, axis=0).astype(np.float32)            # (T,B)
+        last_value = np.asarray(last_value, dtype=np.float32).reshape(batch)   # (B,)
+
+        adv = np.zeros((time_steps, batch), dtype=np.float32)
+        lastgaelam = np.zeros((batch,), dtype=np.float32)
+
+        for t in range(time_steps - 1, -1, -1):
+            next_nonterm = 1.0 - dones[t]
+            next_value = last_value if t == time_steps - 1 else values[t + 1]
+            delta = rewards[t] + gamma * next_value * next_nonterm - values[t]
+            lastgaelam = delta + gamma * gae_lambda * next_nonterm * lastgaelam
+            adv[t] = lastgaelam
+
+        rets = adv + values
+        self._advantages_np = adv
+        self._returns_np = rets
 
     def to_batches(self) -> RolloutBatch:
         """Convert the rollout buffer to a batch."""
@@ -220,7 +229,6 @@ class InfoCountsLogger:
         self._values = {}
         self._booleans = {}
         self._averages = {}
-        self._averages_short = {}
 
     def _build_dict(self, d, i):
         result = {}
@@ -243,24 +251,23 @@ class InfoCountsLogger:
                 continue
 
             state : yndf.NethackState = info.get("state", None)
-            if state is not None:
-                self._add_boolean("metrics/idle-moves", state.idle_action)
+            self._add_boolean("metrics/idle-moves", state.idle_action)
 
             if (total_reward := info.get("total_reward", None)) is not None:
-                self._averages_short.setdefault("rollout/ep_rew_mean", []).append(total_reward)
+                self._add_avg_metric(state.player.cls, "total_reward", total_reward)
 
             if (total_steps := info.get("total_steps", None)) is not None:
-                self._averages_short.setdefault("metrics/total_steps", []).append(total_steps)
+                self._add_avg_metric(state.player.cls, "total_steps", total_steps)
 
             if (ending := info.get("ending", None)) is not None:
                 self._counters.setdefault("endings", []).append(ending)
                 if state is not None:
-                    self._averages.setdefault("metrics/depth", []).append(state.player.depth)
-                    self._averages.setdefault("metrics/time", []).append(state.time)
-                    self._averages.setdefault("metrics/score", []).append(state.player.score)
-                    self._averages.setdefault("metrics/level", []).append(state.player.level)
+                    self._add_avg_metric(state.player.cls, "depth", state.player.depth)
+                    self._add_avg_metric(state.player.cls, "time", state.time)
+                    self._add_avg_metric(state.player.cls, "score", state.player.score)
+                    self._add_avg_metric(state.player.cls, "level", state.player.level)
 
-                    self._averages.setdefault(f"times/{ending}", []).append(state.time)
+                    self._add_avg_metric(state.player.cls, "ending", state.time)
 
             if (rewards := info.get("rewards", None)) is not None:
                 for name, value in rewards.items():
@@ -269,24 +276,18 @@ class InfoCountsLogger:
 
         return True
 
+    def _add_avg_metric(self, cls, metric, value):
+        self._averages.setdefault(f"metrics/{metric}", []).append(value)
+        self._averages.setdefault(f"{cls}/{metric}", []).append(value)
+
     def _add_boolean(self, key: str, value: Optional[bool]) -> None:
         if value is not None:
             v = self._booleans.get(key, (0, 0))
             self._booleans[key] = (v[0] + (1 if value else 0), v[1] + 1)
 
-
-    def should_emit_short(self, steps):
-        """Whether we should emit short logs."""
-        return self._next_short_log_step <= steps
-
     def should_emit_long(self, steps):
         """Whether we should emit long logs."""
         return self._next_log_step <= steps
-
-    def emit_short_running(self, steps) -> bool:
-        """Emit short logs."""
-        self._emit_averages(steps, self._averages_short, None, None)
-        self._next_short_log_step += self._short_log_every
 
     def emit_long_running(self, steps) -> bool:
         """Emit long logs."""
@@ -649,9 +650,6 @@ def train(args : PPOArgs) -> None:
 
         if checkpoints.next_save_step <= global_step:
             checkpoints.save(global_step, model_adapter)
-
-        if info_logger.should_emit_short(global_step):
-            info_logger.emit_short_running(global_step)
 
         if info_logger.should_emit_long(global_step):
             info_logger.emit_long_running(global_step)
