@@ -24,7 +24,7 @@ class NethackPlayer:
     """Player state in Nethack."""
     # pylint: disable=no-member
 
-    def __init__(self, obs):
+    def __init__(self, obs, character: str):
         blstats = obs['blstats']
         self.position = (int(blstats[1]), int(blstats[0]))  # (y, x) coords of the player
         self.score = blstats[nethack.NLE_BL_SCORE]
@@ -36,6 +36,18 @@ class NethackPlayer:
         self.exp = blstats[nethack.NLE_BL_EXP]
         self.hunger = blstats[nethack.NLE_BL_HUNGER]
         self._conditions = blstats[nethack.NLE_BL_CONDITION]
+
+        if character:
+            parts = character.split("-")
+            self.cls = parts[0]
+            self.race = parts[1]
+            self.alignment = parts[2]
+            self.gender = parts[3]
+        else:
+            self.cls = "unknown"
+            self.race = "unknown"
+            self.alignment = "unknown"
+            self.gender = "unknown"
 
     @property
     def is_confused(self):
@@ -158,7 +170,7 @@ class NethackState:
     """World state in Nethack."""
     # pylint: disable=no-member
 
-    def __init__(self, obs, info, how_died: Optional[str], prev: Optional['NethackState'] = None):
+    def __init__(self, obs, info, how_died: Optional[str], character: str, prev: Optional['NethackState'] = None):
         self.original = OriginalObservationInfo(obs, info)
         obs = self.original.observation
         info = self.original.info
@@ -174,14 +186,14 @@ class NethackState:
 
         if prev is not None and info['end_status'] != 0:
             # when we hit a game over, we no longer get stats, use the previous obs but set the hp to 0
-            self.player = NethackPlayer(prev.original.observation)
+            self.player = NethackPlayer(prev.original.observation, character)
             self.player.hp = 0
 
             self.time = prev.original.observation['blstats'][nethack.NLE_BL_TIME]
             self.floor = prev.floor if prev_is_usable else None
 
         else:
-            self.player = NethackPlayer(obs)
+            self.player = NethackPlayer(obs, character)
             self.time = obs['blstats'][nethack.NLE_BL_TIME]
 
             for boulder in self.stuck_boulders:

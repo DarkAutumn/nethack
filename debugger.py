@@ -88,6 +88,7 @@ class Controller(yndf.gui.NethackController):
         properties = {
             "Actions": available_actions,
             "Disallowed": masked_actions,
+            "Character" : self.env.unwrapped.character,
             "Locked Doors": state.locked_doors,
         }
 
