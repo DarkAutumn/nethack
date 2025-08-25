@@ -143,8 +143,6 @@ class GlyphLookupTable:
             properties |= self.DETECTED_MONSTER
         if nethack.glyph_is_invisible(glyph):
             properties |= self.INVISIBLE
-        if glyph == 333:
-            properties |= self.PLAYER
         else:
             if nethack.glyph_is_monster(glyph):
                 properties |= self.MONSTER
@@ -273,10 +271,11 @@ class DungeonLevel:
     WALLS_ADJACENT = _bit(GLYPH_TABLE.UNUSED_BIT + 4)
     DEAD_END = _bit(GLYPH_TABLE.UNUSED_BIT + 5)
 
-    def __init__(self, glyphs: np.ndarray, stuck_boulders, locked, prev : 'DungeonLevel' = None):
+    def __init__(self, glyphs: np.ndarray, player_pos, stuck_boulders, locked, prev : 'DungeonLevel' = None):
         self.glyphs = glyphs
 
         self.properties = GLYPH_TABLE.properties[glyphs] & ((1 << GLYPH_TABLE.UNUSED_BIT) - 1)
+        self.properties[*player_pos] |= GLYPH_TABLE.PLAYER
         player = (self.properties & GLYPH_TABLE.PLAYER) != 0
         self.properties[player] |= self.VISITED
 
@@ -322,6 +321,16 @@ class DungeonLevel:
         self.search_count = prev.search_count if prev else np.zeros_like(self.glyphs, dtype=np.uint8)
         self.search_score = self._compute_search_score()
         self.wavefront = self._calculate_wavefront(stuck_boulders)
+
+    @cached_property
+    def frontier(self):
+        """Mask for all frontier tiles on the level."""
+        return (self.properties & self.FRONTIER) != 0
+
+    @cached_property
+    def descend_mask(self):
+        """Mask for all descend tiles on the level."""
+        return (self.properties & GLYPH_TABLE.DESCEND_LOCATION) != 0
 
     @cached_property
     def dungeon_floor(self) -> np.ndarray:
@@ -376,7 +385,7 @@ class DungeonLevel:
     @cached_property
     def enemies(self):
         """Returns unallied monsters."""
-        return (self.properties & (GLYPH_TABLE.MONSTER | GLYPH_TABLE.PET)) == GLYPH_TABLE.MONSTER
+        return (self.properties & (GLYPH_TABLE.MONSTER | GLYPH_TABLE.PET | GLYPH_TABLE.PLAYER)) == GLYPH_TABLE.MONSTER
 
     @cached_property
     def objects(self):

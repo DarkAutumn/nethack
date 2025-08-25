@@ -28,5 +28,23 @@
             "console": "integratedTerminal",
             "justMyCode": false
         },
+        {
+            "name": "nethack-llm",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "nethack_llm.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "TEST-GPTOSSLLM",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "test_llm.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
     ]
 }

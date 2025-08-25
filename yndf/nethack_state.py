@@ -1,6 +1,7 @@
 """The state of nethack at the current timestep.  All wrappers should interact with this instead of using
 observation directly."""
 
+from enum import Enum
 from typing import Optional, Tuple
 from nle import nethack
 
@@ -20,6 +21,31 @@ def _perps(dy: int, dx: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
     # Two perpendicular unit vectors to (dy, dx)
     return (dx, -dy), (-dx, dy)
 
+COND_MAP = {
+    nethack.BL_MASK_TERMILL : "terminally ill",
+    nethack.BL_MASK_CONF : "confused",
+    nethack.BL_MASK_BLIND : "blind",
+    nethack.BL_MASK_DEAF : "deaf",
+    nethack.BL_MASK_FLY : "flying",
+    nethack.BL_MASK_FOODPOIS : "food poisoned",
+    nethack.BL_MASK_HALLU : "hallucinating",
+    nethack.BL_MASK_LEV : "levitating",
+    nethack.BL_MASK_RIDE : "riding",
+    nethack.BL_MASK_SLIME : "slimed",
+    nethack.BL_MASK_STONE : "stoned",
+    nethack.BL_MASK_STRNGL : "strangled",
+    nethack.BL_MASK_STUN : "stunned",
+}
+
+class Hunger(Enum):
+    SATIATED = 0
+    NORMAL = 1
+    HUNGRY = 2
+    WEAK = 3
+    FAINTING = 4
+    FAINTED = 5
+    STARVED = 6
+
 class NethackPlayer:
     """Player state in Nethack."""
     # pylint: disable=no-member
@@ -27,18 +53,27 @@ class NethackPlayer:
     def __init__(self, obs, character: str):
         blstats = obs['blstats']
         self.position = (int(blstats[1]), int(blstats[0]))  # (y, x) coords of the player
-        self.score = blstats[nethack.NLE_BL_SCORE]
-        self.gold = blstats[nethack.NLE_BL_GOLD]
-        self.hp = blstats[nethack.NLE_BL_HP]
-        self.hp_max = blstats[nethack.NLE_BL_HPMAX]
-        self.level = blstats[nethack.NLE_BL_XP]
-        self.depth = blstats[nethack.NLE_BL_DEPTH]
-        self.exp = blstats[nethack.NLE_BL_EXP]
-        self.hunger = blstats[nethack.NLE_BL_HUNGER]
-        self._conditions = blstats[nethack.NLE_BL_CONDITION]
+        self.str25 = int(blstats[nethack.NLE_BL_STR25])
+        self.str125 = int(blstats[nethack.NLE_BL_STR125])
+        self.dex = int(blstats[nethack.NLE_BL_DEX])
+        self.con = int(blstats[nethack.NLE_BL_CON])
+        self.intel = int(blstats[nethack.NLE_BL_INT])
+        self.wis = int(blstats[nethack.NLE_BL_WIS])
+        self.cha = int(blstats[nethack.NLE_BL_CHA])
 
-        if character:
-            parts = character.split("-")
+        self.ac = int(blstats[nethack.NLE_BL_AC])
+
+        self.score = int(blstats[nethack.NLE_BL_SCORE])
+        self.gold = int(blstats[nethack.NLE_BL_GOLD])
+        self.hp = int(blstats[nethack.NLE_BL_HP])
+        self.hp_max = int(blstats[nethack.NLE_BL_HPMAX])
+        self.level = int(blstats[nethack.NLE_BL_XP])
+        self.depth = int(blstats[nethack.NLE_BL_DEPTH])
+        self.exp = int(blstats[nethack.NLE_BL_EXP])
+        self.hunger = Hunger(int(blstats[nethack.NLE_BL_HUNGER]))
+        self._conditions = int(blstats[nethack.NLE_BL_CONDITION])
+
+        if character and (parts := character.split("-")) and len(parts) == 4:
             self.cls = parts[0]
             self.race = parts[1]
             self.alignment = parts[2]
@@ -48,6 +83,20 @@ class NethackPlayer:
             self.race = "unknown"
             self.alignment = "unknown"
             self.gender = "unknown"
+
+        inventory = {}
+        for i in range(obs['inv_strs'].shape[0]):
+            letter = obs['inv_letters'][i].tobytes().decode('utf-8').rstrip('\x00')
+            item = obs['inv_strs'][i].tobytes().decode('utf-8').rstrip('\x00')
+            if letter and item:
+                inventory[letter] = item
+
+        self.inventory = inventory
+
+    @property
+    def conditions(self):
+        """Get the player's current conditions."""
+        return [name for mask, name in COND_MAP.items() if (self._conditions & mask) == mask]
 
     @property
     def is_confused(self):
@@ -175,6 +224,7 @@ class NethackState:
         obs = self.original.observation
         info = self.original.info
 
+        self.monster_level = int(obs['blstats'][nethack.NLE_BL_HD])
         self.game_aborted = info['end_status'] == -1  # aborted
         self.game_over = info['end_status'] == 1  # death
         self.how_died = how_died
@@ -189,12 +239,12 @@ class NethackState:
             self.player = NethackPlayer(prev.original.observation, character)
             self.player.hp = 0
 
-            self.time = prev.original.observation['blstats'][nethack.NLE_BL_TIME]
+            self.time = int(prev.original.observation['blstats'][nethack.NLE_BL_TIME])
             self.floor = prev.floor if prev_is_usable else None
 
         else:
             self.player = NethackPlayer(obs, character)
-            self.time = obs['blstats'][nethack.NLE_BL_TIME]
+            self.time = int(obs['blstats'][nethack.NLE_BL_TIME])
 
             for boulder in self.stuck_boulders:
                 if self.glyphs[boulder.boulder_position] != BOULDER_GLYPH:
@@ -206,7 +256,8 @@ class NethackState:
             ]
 
             prev_floor = prev.floor if prev_is_usable else None
-            self.floor = DungeonLevel(self.glyphs, self.stuck_boulders, self.locked_doors, prev_floor)
+            self.floor = DungeonLevel(self.glyphs, self.player.position,
+                                      self.stuck_boulders, self.locked_doors, prev_floor)
 
         self.idle_action = self._was_idle(prev)
         self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
