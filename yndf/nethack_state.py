@@ -39,12 +39,11 @@ COND_MAP = {
 
 class Hunger(Enum):
     SATIATED = 0
-    NORMAL = 1
-    HUNGRY = 2
-    WEAK = 3
-    FAINTING = 4
-    FAINTED = 5
-    STARVED = 6
+    HUNGRY = 1
+    WEAK = 2
+    FAINTING = 3
+    FAINTED = 4
+    STARVED = 5
 
 class NethackPlayer:
     """Player state in Nethack."""
@@ -219,7 +218,9 @@ class NethackState:
     """World state in Nethack."""
     # pylint: disable=no-member
 
-    def __init__(self, obs, info, how_died: Optional[str], character: str, prev: Optional['NethackState'] = None):
+    def __init__(self, obs, info, env, prev: Optional['NethackState'] = None):
+        how_died = env.unwrapped.nethack.how_done().name.lower() if info['end_status'] == 1 else None
+        character = env.unwrapped.character
         self.original = OriginalObservationInfo(obs, info)
         obs = self.original.observation
         info = self.original.info

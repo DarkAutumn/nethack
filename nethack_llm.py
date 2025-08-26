@@ -7,12 +7,9 @@ import gymnasium as gym
 from yndf.dict_state import get_status_dict
 from pprint import pprint
 from llm import LLMWithTools
+from typing import Tuple
 
-
-def _get_state(e, obs, info, prev):
-    how_died = e.unwrapped.nethack.how_done().name.lower() if info['end_status'] == 1 else None
-    character = e.unwrapped.character
-    return yndf.NethackState(obs, info, how_died, character, prev)
+from yndf.wrapper_actions import COORDINATE_TO_ACTION
 
 def _print(env, action, status):
     print("\033[2J\033[H", end="")
@@ -100,35 +97,117 @@ def _get_action_history_item(action):
 
     return result
 
+
+class NethackChatState:
+    def __init__(self, env, state : yndf.NethackState):
+        self.initial_state = state
+        self.env = env
+
+        self._steps = []
+
+    def step(self, action):
+        if self.done:
+            raise ValueError("Episode is already terminated.")
+        index = self.env.unwrapped.actions.index(action)
+        obs, reward, terminated, truncated, info = self.env.step(index)
+        state = yndf.NethackState(obs, info, self.env, self.current_state)
+        self._steps.append((action, obs, reward, terminated, truncated, info, state))
+        return self.done
+
+    def throw_if_repeat(self):
+        if self.has_stepped:
+            raise ValueError("Can only call one NETHACK-ACTION.")
+
+    def throw_if_not_called(self):
+        if not self.has_stepped:
+            raise ValueError("No NETHACK-ACTION was executed.")
+
+    @property
+    def done(self):
+        return self._steps and any(s[3] or s[4] for s in self._steps)
+
+    @property
+    def has_stepped(self):
+        return bool(self._steps)
+
+    @property
+    def current_state(self):
+        return self._steps[-1][-1] if self._steps else self.initial_state
+
+NAME_TO_ACTION = {
+    'n' : nethack.CompassDirection.N,
+    's' : nethack.CompassDirection.S,
+    'e' : nethack.CompassDirection.E,
+    'w' : nethack.CompassDirection.W,
+    'nw' : nethack.CompassDirection.NW,
+    'sw' : nethack.CompassDirection.SW,
+    'ne' : nethack.CompassDirection.NE,
+    'se' : nethack.CompassDirection.SE
+}
+
+class NethackTools:
+    _success_message = "Completed successfully.  Return the requested OUTPUT to the user for the next step."
+
+    def __init__(self, llm : LLMWithTools, env, state, allow_expert : bool):
+        self._chat_state = NethackChatState(env, state)
+
+        def ask_an_expert(question: str, game_state: str) -> str:
+            """Ask a Nethack expert a question and return the answer.
+
+            Args:
+                question: The natural-language question to ask the expert.
+                game_state: The current state of the game, which is a GAME_STATE_DICT.
+
+            Returns:
+                str: The expert's response to the question.
+            """
+            msg = "\n".join([question, "GAME_STATE", game_state])
+            _, result = self._expert.chat(msg)
+            return result
+
+        def move(direction: str) -> str:
+            """NETHACK-ACTION: Move in the specified direction.
+
+            Args:
+                direction: n s e w nw sw ne se
+
+            Returns:
+                str: A description of whether the move was successful.
+            """
+            action = NAME_TO_ACTION.get(direction)
+            if action is None:
+                raise ValueError(f"Invalid direction: {direction}")
+
+            self._chat_state.step(action)
+            return self._success_message
+
+        if allow_expert:
+            self._expert = LLMWithTools(system_prompt="Answer all Nethack questions with confidence",
+                                        max_new_tokens=1024*128, temperature=0.3, model=llm.model,
+                                        tokenizer=llm.tokenizer, io_lock=llm._gen_lock)
+            llm.register_tool("ask_an_expert", ask_an_expert)
+
+        llm.register_tool("move", move)
+
+    def begin_step(self):
+        self._chat_state = NethackChatState(self._chat_state.env, self._chat_state.current_state)
+
+    def end_step(self):
+        self._chat_state.throw_if_not_called()
+        self._chat_state = None
+
 def main():
     with open("instructions.txt", "r", encoding="utf-8") as f:
         instructions = f.read()
 
     llm = LLMWithTools(system_prompt=instructions, max_new_tokens=1024*128, temperature=0.3)
-    expert = LLMWithTools(system_prompt="You are an expert on Nethack, answer all questions with confidence",
-                          max_new_tokens=1024*128, temperature=0.3, model=llm.model,
-                          tokenizer=llm.tokenizer, io_lock=llm._gen_lock)
-
-    def ask_an_expert(question: str, game_state: str) -> str:
-        """Ask a NetHack expert a question and return the answer.
-
-        Args:
-            question: The natural-language question to ask the expert.
-            game_state: The current state of the game, which is a GAME_STATE_DICT.
-
-        Returns:
-            str: The expert's response to the question.
-        """
-        msg = "\n".join([question, "GAME_STATE", game_state])
-        thinking, result = expert.chat(msg)
-        return result
-
-    llm.register_tool("ask_an_expert", ask_an_expert)
 
     env = gym.make("NetHackChallenge-v0")
-    state = None
     o, i = env.reset()
-    state = _get_state(env, o, i, state)
+
+    state = yndf.NethackState(o, i, env)
+    nethack_tools = NethackTools(llm, env, state, False)
+
     msg_hist = deque(maxlen=5)
     action_hist = deque(maxlen=10)
     status = get_status_dict(state)
@@ -138,7 +217,9 @@ def main():
     _print(env, None, status)
 
     while True:
+        nethack_tools.begin_step()
         thinking, action = llm.chat(json.dumps(status))
+        nethack_tools.end_step()
         action = json.loads(action)
         print("\n--- THINKING ---\n", thinking)
         print("\n--- RESULT ---\n", json.dumps(action, indent=2))
@@ -165,7 +246,7 @@ def main():
                 if term or trunc:
                     return
 
-                state = _get_state(env, o, i, state)
+                state = yndf.NethackState(env, o, i, state)
                 if more_loop := "--More--" in state.message:
                     prev_message += state.message.split("--More--")[0] + ' '
 

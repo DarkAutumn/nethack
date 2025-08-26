@@ -7,7 +7,8 @@ from yndf.nethack_state import NethackState
 def _get_dungeon_status(state: NethackState) -> Dict[str, any]:
     return {
         "depth": state.player.depth,
-        "monster-level" : state.monster_level
+        "monster-level" : state.monster_level,
+        "time" : state.time
     }
 
 def _get_player_status(state: NethackState) -> Dict[str, any]:
