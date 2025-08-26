@@ -13,6 +13,11 @@ def _get_dungeon_status(state: NethackState) -> Dict[str, any]:
 
 def _get_player_status(state: NethackState) -> Dict[str, any]:
     player = state.player
+
+    inventory = []
+    for letter, name in player.inventory.items():
+        inventory.append({"id": letter, "name": name})
+
     result = {
         "position" : player.position,
         "str" : f"{player.str25}/{player.str125}",
@@ -27,7 +32,7 @@ def _get_player_status(state: NethackState) -> Dict[str, any]:
         "hunger" : player.hunger.name,
         "status" : player.conditions,
         "gold" : player.gold,
-        "inventory" : player.inventory
+        "inventory" : inventory
     }
 
     return result

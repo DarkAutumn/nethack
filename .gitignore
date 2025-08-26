@@ -4,3 +4,4 @@ models/
 replays/
 *.prof
 venv/
+key.txt

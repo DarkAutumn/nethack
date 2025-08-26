@@ -81,6 +81,16 @@ Consumables:
 
 ---
 
+NETHACK-RESPONSE: When calling an action, sometimes Nethack will want a response such as to a yes/no question, or when
+asking what item to use/equip/etc. In this case, the return value of an action will tell you to call one of the
+following:
+
+respond_yn - respond to a yes/no question
+respond_inventory - respond with an inventory id of which item
+respond_direction - respond with a direction
+
+---
+
 A direction in nethack can be a cardinal or intercardinal and some commands accept "here".
 Valid options are: n s e w ne se nw sw here
 

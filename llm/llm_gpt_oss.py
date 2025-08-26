@@ -52,7 +52,7 @@ class LLMWithTools:
             self.tokenizer = tokenizer
             self.model = model
         else:
-            max_memory = {0: "16GiB"}
+            max_memory = {0: "14GiB"}
             self.tokenizer = AutoTokenizer.from_pretrained(model_id)
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
