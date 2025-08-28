@@ -263,6 +263,12 @@ class NethackState:
         self.idle_action = self._was_idle(prev)
         self.message = obs['message'].tobytes().decode('utf-8').rstrip('\x00')
 
+
+    @property
+    def waiting_for_more(self):
+        """Returns if the game is waiting for the MORE input."""
+        return "--More--" in self.original.observation["tty_chars"].tobytes().decode("utf-8")
+
     @property
     def tty_chars(self):
         """Return the TTY characters from the observation."""

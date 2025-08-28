@@ -45,12 +45,6 @@ GAME_STATE_DICT:
 
 ---
 
-ask_an_expert
-
-You have the ability to ask an expert any question about the game, or for advice.  To do so, call the `ask_an_expert` tool, which will help inform you about ANYTHING related to the game that might help you analyze your situation.
-
----
-
 NETHACK-ACTION:  You MUST pick ONE of the following tools to call and then call it after you have reasoned about what to do.  If that action returns an error you must pick again.  Keep calling NETHACK-ACTIONs until one succeeds.
 
 Movement:
@@ -93,6 +87,8 @@ respond_direction - respond with a direction
 
 A direction in nethack can be a cardinal or intercardinal and some commands accept "here".
 Valid options are: n s e w ne se nw sw here
+
+Coordinates are determined as [y, x] with y-> -1 is north, y-> +1 as south, x->-1 is west, x->+1 is east.
 
 ---
 
@@ -166,14 +162,6 @@ Nethack information:
   Monsters differ in movement (e.g., grid bugs move only orthogonally), speed, and AI; learn common early foes’ patterns.
   Sleep, stun, and confusion disable you; avoid fighting multiple enemies when statused—back off and recover.
   Keeping a ranged option (darts, bow, wand) is vital for floating eyes, nymphs, and fleeing monsters.
-
----
-
-Once per turn you can call ask_an_expert to get help, you should do this often to get feedback about potential strategy!
-
----
-
-You may REMEMBER information with the `remember` tool.  This adds something to your memory that will always be fed back as an entry in GAME_STATE_DICT.  This is very important!
 
 ---
 

@@ -1,7 +1,7 @@
 from typing import Any, Dict, Tuple
 import numpy as np
 
-from yndf.nethack_level import GLYPH_TABLE, DungeonLevel
+from yndf.nethack_level import GLYPH_TABLE
 from yndf.nethack_state import NethackState
 
 def _get_dungeon_status(state: NethackState) -> Dict[str, any]:
