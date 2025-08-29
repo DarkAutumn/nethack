@@ -93,16 +93,16 @@ class GPT5NanoAgent:
         self.client = client or OpenAI()
         self.model = model
         self.reasoning_effort = reasoning_effort
-        self._system_prompt = instructions_text  # keep identical for prompt caching
+        self.system_prompt = instructions_text  # keep identical for prompt caching
         self._tools = ToolRegistry()
 
     def register_tool(self, model_cls: Type[BaseModel], func: Callable[..., Any], description: Optional[str] = None):
         self._tools.register_tool(model_cls, func, description)
 
-    def chat(self, text, *, output_callback, max_tool_rounds: int = 8):
+    def chat(self, text, *, output_callback, max_tool_rounds: int = 8, require_tool_call: bool = False):
         """Call the LLM with the given input and structure the output into steps."""
         initial_input = [
-            {"role": "system", "content": [{"type": "input_text", "text": self._system_prompt}]},
+            {"role": "system", "content": [{"type": "input_text", "text": self.system_prompt}]},
             {"role": "user", "content": [{"type": "input_text", "text": text if isinstance(text, str) else json.dumps(text)}]},
             {"role": "user", "content": [{"type": "input_text", "text": "Think deeply about what to do, then call a NETHACK-ACTION tool."}]},
         ]
@@ -175,7 +175,7 @@ class GPT5NanoAgent:
                 continue
 
             # No tool calls this turn. If the model tried to output anyway, nudge it.
-            if saw_assistant_message and not tool_rounds:
+            if require_tool_call and saw_assistant_message and not tool_rounds:
                 next_input_items = [
                     {
                         "role": "user",

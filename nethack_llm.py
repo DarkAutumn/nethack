@@ -1,10 +1,9 @@
 from collections import deque
-import json
-from typing import Literal, Callable
+from typing import Callable
 from pprint import pprint
 
-from pydantic import BaseModel, Field, conint, constr
-from llm.gpt5_nethack_agent import GPT5NanoAgent, LLMStep, StepKind
+from pydantic import Field, conint, constr
+from llm.gpt5_nethack_agent import GPT5NanoAgent, JsonStep, LLMStep, StepKind
 from nle import nethack
 
 from openai import OpenAI
@@ -162,7 +161,7 @@ class NethackTools:
     def __init__(self, context : NethackContext):
         self.context = context
 
-    def move(self, direction: str, far: bool) -> str:
+    def move(self, direction: str, far: bool):
         """Move in the specified direction."""
         action = NAME_TO_ACTION.get(direction)
         if action is None:
@@ -171,16 +170,14 @@ class NethackTools:
         if far:
             self.context.step(nethack.Command.MOVEFAR, "move", ("far",))
 
-        step = self.context.step(action, "move", (direction,))
-        return self._get_llm_response(step, True)
+        self.context.step(action, "move", (direction,))
 
-    def search(self, num_turns : int) -> str:
+    def search(self, num_turns : int):
         """Search for hidden objects or passages in the 8 tiles around the current one."""
         count = num_turns if num_turns > 1 else None
-        step = self.context.step(nethack.Command.SEARCH, "search", (num_turns,), count=count)
-        return self._get_llm_response(step, True)
+        self.context.step(nethack.Command.SEARCH, "search", (num_turns,), count=count)
 
-    def kick(self, direction: str) -> str:
+    def kick(self, direction: str):
         """Kick in the specified direction."""
         dir_action = NAME_TO_ACTION.get(direction)
         if dir_action is None:
@@ -196,9 +193,15 @@ class NethackTools:
             else:
                 continue_kicks = False
 
-        return self._get_llm_response(step, True)
+    def ascend(self):
+        """Ascend to the previous floor."""
+        self.context.step(nethack.MiscDirection.UP, "ascend", None)
 
-    def fire(self, direction: str) -> str:
+    def descend(self):
+        """Descend to the next floor."""
+        self.context.step(nethack.MiscDirection.DOWN, "descend", None)
+
+    def fire(self, direction: str):
         """Fire a projectile in the specified direction."""
         dir_action = NAME_TO_ACTION.get(direction)
         if dir_action is None:
@@ -208,60 +211,75 @@ class NethackTools:
         if "what direction" in step.message.lower():
             step = self.context.step(dir_action, "fire_direction", (direction,))
 
-        return self._get_llm_response(step, True)
+    def throw(self, inventory_id: str, direction: str):
+        """Throw an item from the inventory in the specified direction."""
+        dir_action = NAME_TO_ACTION.get(direction)
+        if dir_action is None:
+            raise ValueError(f"Invalid direction: {direction}")
 
-    def wait(self, num_turns: int) -> str:
+        step = self.context.step([nethack.Command.THROW, ord(inventory_id)], "throw", (inventory_id, direction))
+        if "What do you want to throw?" in step.message:
+            step = self.context.step(ord(inventory_id), "throw - select", (inventory_id,))
+            if "In what direction?" in step.message:
+                step = self.context.step(dir_action, "throw_direction", (inventory_id, direction))
+
+    def wait(self, num_turns: int):
         """Wait for a specified number of turns."""
 
         count = num_turns if num_turns > 1 else None
-        step = self.context.step(nethack.MiscDirection.WAIT, "wait", (num_turns,), count=count)
-        return self._get_llm_response(step, True)
+        self.context.step(nethack.MiscDirection.WAIT, "wait", (num_turns,), count=count)
 
-    def eat(self) -> str:
+    def eat(self, inventory_id: str):
         """Eat a food item from the inventory or the floor."""
-        step = self.context.step(nethack.Command.EAT, "eat", None)
-        return self._get_llm_response(step, True)
+        step = self.context.step(nethack.Command.EAT, "eat", (inventory_id,))
+        while "eat it?" in step.message:
+            step = self.context.step(ord('n'), "eat - confirm", (inventory_id,))
 
-    def wield(self, inventory_id: str) -> str:
-        """Wield a weapon from the inventory."""
-        step = self.context.step([nethack.Command.WIELD, inventory_id], "wield", (inventory_id,))
-        return self._get_llm_response(step, True)
+        self.context.step(ord(inventory_id), "eat - select", (inventory_id,))
 
-    def wear(self, inventory_id: str) -> str:
+    def eat_floor(self):
+        """Eat a food item from the floor."""
+        step = self.context.step(nethack.Command.EAT, "eat_floor", None)
+        while "eat it?" in step.message:
+            step = self.context.step(ord('y'), "eat_floor - confirm", None)
+
+        if "What do you want to eat?" in step.message:
+            step = self.context.step(nethack.Command.ESC, "eat_floor - select", None)
+
+    def wear(self, inventory_id: str):
         """Wear armor from the inventory."""
-        step = self.context.step([nethack.Command.WEAR, inventory_id], "wear", (inventory_id,))
-        return self._get_llm_response(step, True)
+        self.context.step([nethack.Command.WEAR, inventory_id], "wear", (inventory_id,))
 
-    def put_on(self, inventory_id: str) -> str:
+    def wield(self, inventory_id: str):
+        """Wield a weapon from the inventory."""
+        self.context.step([nethack.Command.WIELD, inventory_id], "wield", (inventory_id,))
+
+    def put_on(self, inventory_id: str):
         """Put on an item from the inventory."""
-        step = self.context.step([nethack.Command.PUTON, inventory_id], "put_on", (inventory_id,))
-        step = self.context.step(ord(inventory_id), "put_on", (inventory_id,))
-        return self._get_llm_response(step, True)
+        self.context.step([nethack.Command.PUTON, inventory_id], "put_on", (inventory_id,))
+        self.context.step(ord(inventory_id), "put_on", (inventory_id,))
 
-    def take_off(self, inventory_id: str) -> str:
+    def take_off(self, inventory_id: str):
         """Take off an item from the inventory."""
-        step = self.context.step([nethack.Command.TAKEOFF, inventory_id], "take_off", (inventory_id,))
-        return self._get_llm_response(step, True)
+        step = self.context.step(nethack.Command.TAKEOFF, "take_off", (inventory_id,))
+        if "You finish taking" not in step.message:
+            self.context.step(ord(inventory_id), "take_off - select", (inventory_id,))
 
-    def quiver(self, inventory_id: str) -> str:
+    def quiver(self, inventory_id: str):
         """Quiver an item from the inventory."""
-        step = self.context.step([nethack.Command.QUIVER, inventory_id], "quiver", (inventory_id,))
-        return self._get_llm_response(step, True)
+        self.context.step([nethack.Command.QUIVER, inventory_id], "quiver", (inventory_id,))
 
     def pick_up(self) -> str:
         """Pick up an item from the ground."""
-        step = self.context.step(nethack.Command.PICKUP, "pick_up", None)
-        return self._get_llm_response(step, True)
+        self.context.step(nethack.Command.PICKUP, "pick_up", None)
 
     def apply(self, inventory_id: str) -> str:
         """Apply an item from the inventory."""
-        step = self.context.step([nethack.Command.APPLY, ord(inventory_id)], "apply", (inventory_id,))
-        return self._get_llm_response(step, True)
+        self.context.step([nethack.Command.APPLY, ord(inventory_id)], "apply", (inventory_id,))
 
     def drop(self, inventory_id: str) -> str:
         """Drop an item from the inventory."""
-        step = self.context.step([nethack.Command.DROP, ord(inventory_id)], "drop", (inventory_id,))
-        return self._get_llm_response(step, True)
+        self.context.step([nethack.Command.DROP, ord(inventory_id)], "drop", (inventory_id,))
 
     def respond(self, response: str) -> str:
         """Respond to a prompt."""
@@ -275,8 +293,6 @@ class NethackTools:
                     step = self.context.step(nethack.MiscAction.MORE, "respond", (item,))
                 case _:
                     step = self.context.step(ord(item), "respond", (item,))
-
-        return self._get_llm_response(step, False)
 
     def _get_items(self, response: str) -> list[str]:
         """Extract item names from a response string."""
@@ -295,95 +311,6 @@ class NethackTools:
             i += 1
 
         return result
-
-    def _get_llm_response(self, step : NethackStep, is_action : bool) -> str:
-        msg = step.message
-
-        result = "Action completed. " if is_action else "Response sent. "
-
-        if msg:
-            result += f"Nethack responded '{msg}'. "
-        result += "Provide OUTPUT to the user."
-        return result
-
-# Reusable enums
-DIRECTION_ENUM = ["n", "s", "e", "w", "nw", "ne", "sw", "se"]
-DIRECTION_OR_HERE_ENUM = DIRECTION_ENUM + ["here"]
-
-class MoveOrMelee(BaseModel):
-    direction: Literal["n","s","e","w","nw","ne","sw","se"] = \
-        Field(..., description="Compass direction to move/attack.")
-    far: bool = Field(..., description="Whether the action is a far move (move until stopped).")
-
-class Wait(BaseModel):
-    num_turns: conint(ge=1, le=1000) = Field(..., description="Number of turns to wait")
-
-class Search(BaseModel):
-    num_turns: conint(ge=1, le=50) =  Field(..., description="Search turns (22 total is a common recommendation)")
-
-class Kick(BaseModel):
-    direction: Literal["n","s","e","w","nw","ne","sw","se"]
-
-class Eat(BaseModel):
-    pass
-
-class PickUp(BaseModel):
-    pass
-
-class Wield(BaseModel):
-    inventory_id : constr(min_length=1, max_length=1) = Field(..., description="Inventory id of the weapon to wield")
-
-class Wear(BaseModel):
-    inventory_id : constr(min_length=1, max_length=1) = Field(..., description="Inventory id of the item to wear")
-
-class PutOn(BaseModel):
-    inventory_id : constr(min_length=1, max_length=1) = Field(..., description="Inventory id of the accessory (ring or amulet) to put on")
-
-class TakeOff(BaseModel):
-    inventory_id : constr(min_length=1, max_length=1) = Field(..., description="Inven" \
-    "tory id of the item to take off")
-
-class Quiver(BaseModel):
-    inventory_id : constr(min_length=1, max_length=1) = Field(..., description="Inventory id of the projectile to put into your quiver")
-
-class Apply(BaseModel):
-    inventory_id : constr(min_length=1, max_length=1) = Field(..., description="Inventory id of the item to apply")
-
-class Fire(BaseModel):
-    direction: Literal["n","s","e","w","nw","ne","sw","se"] = \
-        Field(..., description="Compass direction to fire.")
-
-class Respond(BaseModel):
-    response: str = Field(..., description="Response to a prompt.  [ESC], [ENTER], or [SPACE] will be interpeted as those keys, otherwise this should be a single character.")
-
-def register_tools(agent, tools : NethackTools):
-    # pylint: disable=unnecessary-lambda
-
-    agent.register_tool(MoveOrMelee, lambda direction, far: tools.move(direction, far),
-                        "NETHACK-ACTION: Move the player or melee attack enemy if one is in the square you attempt to move into.  Use far=true to move in a direction until something happens (either you reach a wall or you spot an enemy or a status message occurs).  Prioritize far moves as much as possible as they are safe and cuts down on the total number of turns.")
-    agent.register_tool(Wait, lambda num_turns: tools.wait(num_turns), "NETHACK-ACTION: Wait (rest) for the given number of turns.  num_turns==1 is useful for waiting on a monster to get closer, num_turns==50 is useful to wait for hp to regenerate.")
-    agent.register_tool(Search, lambda num_turns: tools.search(num_turns), "NETHACK-ACTION: Search the 8 squares around you, a num_turns of 22 is common to ensure you fully found everything.  Search should only be used if you are standing on a 1.0 search score tile, otherwise you should move to objects or frontier instead of searching.")
-    agent.register_tool(Kick, lambda direction: tools.kick(direction), "NETHACK-ACTION: Kick in a direction")
-    agent.register_tool(Eat, lambda: tools.eat(),
-                        "NETHACK-ACTION: Eat an item.  This will trigger a question of what to eat (including things which are directly under you on the floor).  The next turn you will use 'Respond' to respond to it.")
-    agent.register_tool(Wield, lambda inventory_id: tools.wield(inventory_id),
-                        "NETHACK-ACTION: Wield a weapon from your inventory.")
-    agent.register_tool(Wear, lambda inventory_id: tools.wear(inventory_id),
-                        "NETHACK-ACTION: Wear armor from your inventory.")
-    agent.register_tool(PutOn, lambda inventory_id: tools.put_on(inventory_id),
-                        "NETHACK-ACTION: Put on an accessory from your inventory (you can wear 2 rings and 1 amulet).")
-    agent.register_tool(TakeOff, lambda inventory_id: tools.take_off(inventory_id),
-                        "NETHACK-ACTION: Take off an item you are wearing.")
-    agent.register_tool(Quiver, lambda inventory_id: tools.quiver(inventory_id),
-                        "NETHACK-ACTION: Put a projectile into your quiver.")
-    agent.register_tool(Apply, lambda inventory_id: tools.apply(inventory_id),
-                        "NETHACK-ACTION: Apply or use an item from your inventory (lockpick, candle, etc).")
-    agent.register_tool(Fire, lambda direction: tools.fire(direction),
-                        "NETHACK-ACTION: Fire a projectile in a direction (make sure a bow is wielded if using arrows).")
-    agent.register_tool(PickUp, lambda: tools.pick_up(),
-                        "NETHACK-ACTION: Pick up an item from the ground.")
-    agent.register_tool(Respond, lambda response: tools.respond(response),
-                        "NETHACK-ACTION: Respond to an on screen prompt.")
 
 def _get_cost(tokens_used):
     PRICE_INPUT = 0.050 / 1_000_000
@@ -443,20 +370,36 @@ def main():
                     "notes": decision.get("notes", ""),
                 })
 
-
     def _on_step(context, step : NethackStep):
         if step.message:
             messages.appendleft({"time": context.state.time, "message": step.message})
 
     context.register_callback(_on_step)
     nethack_tools = NethackTools(context)
-
-    register_tools(agent, nethack_tools)
+    #register_tools(agent, nethack_tools)
 
     while not context.done:
         context.env.render()
-        _, tokens = agent.chat(get_status_dict(context.state, messages, actions), output_callback=_on_llm_step)
+
+        with open("instructions.txt", "r", encoding="utf-8") as f:
+            agent.system_prompt = f.read()
+        response, tokens = agent.chat(get_status_dict(context.state, messages, actions), output_callback=_on_llm_step)
         pprint(tokens)
+
+        result = [x for x in response if isinstance(x, JsonStep)]
+        if not result:
+            raise ValueError("No valid JSON response found.")
+        result = result[-1].content
+        actions.appendleft(
+            {
+                "time": context.state.time,
+                "action": result.get("action", ""),
+                "args": result.get("args", ""),
+                "notes": result.get("notes", ""),
+            })
+
+        tool = getattr(nethack_tools, result["action"])
+        tool(**result.get("args", {}))
 
         total_cost += _get_cost(tokens)
         print()

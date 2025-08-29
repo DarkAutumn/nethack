@@ -34,7 +34,8 @@ def _get_player_status(state: NethackState) -> Dict[str, any]:
         "hunger" : player.hunger.name,
         "status" : player.conditions,
         "gold" : player.gold,
-        "inventory" : inventory
+        "inventory" : inventory,
+        "can-move" : _get_movable_directions(state)
     }
 
     return result
@@ -83,6 +84,48 @@ def _get_floor_status(state: NethackState) -> Dict[str, any]:
         result["other"] = [_get_object(state, "i", idx, pos) for idx, pos in enumerate(np.argwhere(of_interest))]
 
     return result
+
+DIRECTIONS = {
+    (-1, -1) : "nw",
+    (-1, 0) : "n",
+    (-1, 1) : "ne",
+    (0, -1) : "w",
+    (0, 1) : "e",
+    (1, -1) : "sw",
+    (1, 0) : "s",
+    (1, 1) : "se"
+}
+
+def _get_movable_directions(state : NethackState):
+    result = []
+    y, x = state.player.position
+    for (dy, dx), direction in DIRECTIONS.items():
+        ny, nx = y + dy, x + dx
+        if _can_move(state, y, x, ny, nx, dy, dx):
+            result.append(direction)
+
+    return result
+
+def _can_move(state: NethackState, y, x, ny, nx, dy, dx) -> bool:
+    """Check if the player can move from one position to another."""
+    floor = state.floor
+    open_door = floor.open_doors
+
+    # in-bounds?
+    if not (0 <= ny < open_door.shape[0] and 0 <= nx < open_door.shape[1]):
+        return False
+
+    # Block diagonal through an open door (at either endpoint)
+    if (dy != 0 and dx != 0 and (open_door[y, x] or open_door[ny, nx])):
+        return False
+
+    # Allow movement into closed doors that aren't locked.
+    if floor.closed_doors[ny, nx]:
+        return not floor.locked_doors[ny, nx]
+
+    # Otherwise, check if the tile is passable.
+    return floor.passable[ny, nx]
+
 
 def _get_search_targets(state : NethackState, obj_prefix, idx, pos):
     result = {

@@ -39,11 +39,12 @@ COND_MAP = {
 
 class Hunger(Enum):
     SATIATED = 0
-    HUNGRY = 1
-    WEAK = 2
-    FAINTING = 3
-    FAINTED = 4
-    STARVED = 5
+    NOT_HUNGRY = 1
+    HUNGRY = 2
+    WEAK = 3
+    FAINTING = 4
+    FAINTED = 5
+    STARVED = 6
 
 class NethackPlayer:
     """Player state in Nethack."""
