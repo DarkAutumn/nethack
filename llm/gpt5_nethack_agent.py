@@ -99,22 +99,12 @@ class GPT5NanoAgent:
     def register_tool(self, model_cls: Type[BaseModel], func: Callable[..., Any], description: Optional[str] = None):
         self._tools.register_tool(model_cls, func, description)
 
-    def chat(self, text, is_done, *, output_callback, max_tool_rounds: int = 8):
+    def chat(self, text, *, output_callback, max_tool_rounds: int = 8):
         """Call the LLM with the given input and structure the output into steps."""
-        # initial user/system messages for the *first* request only
         initial_input = [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": self._system_prompt}]
-            },
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": text if isinstance(text, str) else json.dumps(text)}]
-            },
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Think deeply about what to do, then call a NETHACK-ACTION tool."}]
-            },
+            {"role": "system", "content": [{"type": "input_text", "text": self._system_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": text if isinstance(text, str) else json.dumps(text)}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "Think deeply about what to do, then call a NETHACK-ACTION tool."}]},
         ]
 
         steps = []
@@ -128,6 +118,7 @@ class GPT5NanoAgent:
                 raise RuntimeError("Exceeded maximum tool rounds; possible tool loop.")
 
             pending_calls = []
+            saw_assistant_message = False  # <— track if the model tried to “finish” without tools
 
             client_args = {
                 "model": self.model,
@@ -136,7 +127,6 @@ class GPT5NanoAgent:
                 "reasoning": {"effort": self.reasoning_effort, "summary": "detailed"},
                 "input": next_input_items,
             }
-
             if previous_response_id:
                 client_args["previous_response_id"] = previous_response_id
 
@@ -146,11 +136,12 @@ class GPT5NanoAgent:
                 for event in stream:
                     if event.type == "response.output_item.done":
                         if event.item.type == "function_call":
-                            # collect the function call; do NOT break yet
                             pending_calls.append(event.item)
                         elif event.item.type == "message":
                             message = event.item
                             if message.role == "assistant" and message.status == "completed":
+                                # assistant produced output in this turn
+                                saw_assistant_message = True
                                 for content in message.content:
                                     try:
                                         steps.append(JsonStep(json.loads(content.text)))
@@ -180,12 +171,21 @@ class GPT5NanoAgent:
                     self._call_function(outputs, steps, fc)
                     output_callback(steps[-1])
 
-                # Next loop iteration will send these outputs with previous_response_id
-                next_input_items = outputs
+                next_input_items = outputs  # function_call_output list
                 continue
 
-            return steps, tokens_used
+            # No tool calls this turn. If the model tried to output anyway, nudge it.
+            if saw_assistant_message and not tool_rounds:
+                next_input_items = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "Error, you must call at least one tool before producing OUTPUT."}]
+                    }
+                ]
+                continue
 
+            # Nothing else to do
+            return steps, tokens_used
 
     def _call_function(self, messages, steps, fc):
         call_id = fc.call_id

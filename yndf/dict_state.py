@@ -20,6 +20,8 @@ def _get_player_status(state: NethackState) -> Dict[str, any]:
 
     result = {
         "position" : player.position,
+        "hp" : player.hp,
+        "max"
         "str" : f"{player.str25}/{player.str125}",
         "dex" : player.dex,
         "con" : player.con,
@@ -70,7 +72,7 @@ def _get_floor_status(state: NethackState) -> Dict[str, any]:
         result["frontier"] = [_get_object(state, "f", idx, pos)
                                for idx, pos in enumerate(np.argwhere(floor.frontier))]
 
-    search_targets = floor.search_score > 0.2
+    search_targets = (floor.search_score > 0.2) & (floor.search_count < 30) & ~floor.frontier
     if search_targets.any():
         result["search-targets"] = [_get_search_targets(state, "st", idx, pos)
                                      for idx, pos in enumerate(np.argwhere(search_targets))]
@@ -104,11 +106,18 @@ def _get_object(state : NethackState, obj_prefix, idx, pos):
 
     return result
 
-def get_status_dict(state: NethackState) -> Dict[str, Any]:
+def _get_history(messages, actions):
+    return {
+        "messages": list(messages),
+        "actions": list(actions)
+    }
+
+def get_status_dict(state: NethackState, messages, actions) -> Dict[str, Any]:
     result = {
         "player": _get_player_status(state),
         "dungeon": _get_dungeon_status(state),
         "floor": _get_floor_status(state),
+        "history" : _get_history(messages, actions)
     }
 
     if state.message:

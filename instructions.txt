@@ -47,41 +47,11 @@ GAME_STATE_DICT:
 
 NETHACK-ACTION:  You MUST pick ONE of the following tools to call and then call it after you have reasoned about what to do.  If that action returns an error you must pick again.  Keep calling NETHACK-ACTIONs until one succeeds.
 
-Movement:
-  move - Move to the target coordinates
-  wait - Wait the given number of turns to either recover health (50ish turns) or for enemies to move closer (1 turn)
-  open - Open an item within 1 square of you (or on your tile)
-  close - close a door within 1 square of you
-  kick - kick a tile within 1 square of you
-  descend - go down a floor on a stairs-down tile
-
-Inventory:
-  pickup - pickup an item on your tile (will be in messages)
-  drop - drop an item
-  wear - wear an item
-  wield - wield a weapon
-  takeoff - take off an item
-
-Combat:
-  melee - melee attack a square, must be adjacent to you
-  fire - ranged attack a square, must be in straight line from you
-  throw - throw an item (usually daggers or darts), must be in straight line from you
-  cast - cast a spell at a target (wand or spellbook)
-
-Consumables:
-  quaff - drink a potion in your inventory
-  eat - eat an item from your inventory
-  eat-floor - eat an item on the floor (messages will list a corpse)
-
 ---
 
 NETHACK-RESPONSE: When calling an action, sometimes Nethack will want a response such as to a yes/no question, or when
 asking what item to use/equip/etc. In this case, the return value of an action will tell you to call one of the
-following:
-
-respond_yn - respond to a yes/no question
-respond_inventory - respond with an inventory id of which item
-respond_direction - respond with a direction
+following.
 
 ---
 
@@ -89,6 +59,12 @@ A direction in nethack can be a cardinal or intercardinal and some commands acce
 Valid options are: n s e w ne se nw sw here
 
 Coordinates are determined as [y, x] with y-> -1 is north, y-> +1 as south, x->-1 is west, x->+1 is east.
+
+---
+
+Messages that start with "You see" are things in your location that you are standing on.
+Be sure to eat freshly killed corpses (that are not poisonous) consistently if you are not statiated, as this will you full.
+You must be standing on a corpse to eat it, but you can eat anything in your inventory at any time.
 
 ---
 
@@ -115,6 +91,7 @@ Your priorties:
 
 Nethack information:
 
+  Use far moves when possible, especially if moving into a frontier tile.
   The dungeon is grid-based with eight-direction movement; line of sight is blocked by walls and closed doors.
   Melee attacks require adjacency (including diagonals).
   Ranged attacks travel in straight lines (orthogonal or diagonal) until hitting a monster, wall, or door.
@@ -129,16 +106,10 @@ Nethack information:
   Early safe corpses include lichen and jackal; avoid kobold/killer bee corpses due to poison.
   Lizard corpses never rot and can cure stoning; keep one if possible.
   Floating eyes paralyze you if you hit them while able to see; use ranged attacks or blind yourself first.
-  Traps on early floors include arrow/dart traps, pits/spiked pits, rolling boulder traps (notably in Sokoban), bear traps, webs, and trap doors.
   Doors can be open, closed, locked, or trapped; you can open, kick, or pick them—kicking risks traps and angering shopkeepers.
   Secret doors and corridors exist; searching in high search-score locations can find them.
   Stairs connect levels; going upstairs returns you to a previously visited level at the same stair location.
   The Gnomish Mines branch appears early (dlvl ~2–5); expect many gnomes/dwarves, pick-axes, and gems.
-  Minetown (in the Mines) often has shops and sometimes a temple with an altar.
-  Sokoban branch (dlvl ~5–9) contains boulder-pushing puzzles, guaranteed food, and a prize (usually an amulet or bag).
-  Shops appear early; items picked up inside become “unpaid”; you must pay the shopkeeper before leaving.
-  Praying can save you in emergencies (e.g., low HP, fainting from hunger), but only after a cooldown; praying too soon angers your god.
-  Holy water blesses items; cursed items can be uncursed and blessed through various means once you have holy water.
   Cursed weapons can weld to your hand; cursed armor and rings typically cannot be removed until uncursed.
   Rings often have continuous effects (regeneration, slow digestion, protection); many have hunger costs or drawbacks.
   Amulets can be powerful (life saving) or dangerous (strangulation); identify before wearing when possible.
@@ -168,12 +139,12 @@ Nethack information:
 OUTPUT: When you have successfully called a NETHACK-ACTION tool, you MUST return a json formatted dictionary with the following information:
 
   action: The NETHACK-ACTION tool that you called.
-  goal: The goal your agent is attempting to follow.  This is for YOUR future benefit so make it meaningful
+  args: The arguments you called it with.
+  notes: In one sentence, describe what you are doing and anything that you will need to know for your NEXT turn.  This will be passed back to you next turn, so make it useful.
   explanation: A multi-sentence explanation of what you are doing this step and why, to be displayed to the user.
 
-Goal sentence examples (just examples, please deviate as appropriate):
+---
 
-* "Kill visible monsters to gain experience."
-* "Find food and eat to reach satiated without over-eating."
-* "Explore safely and head for the nearest doorway to find the downstairs."
-* "Search for a secret door to progress."
+You MUST pick a NETHACK-ACTION tool to call before producing OUTPUT.
+If the message given seems like a question asking you to pick an item or yes/no, you MUST call Respond.
+You are named Agent.

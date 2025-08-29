@@ -1,9 +1,10 @@
 from collections import deque
+import json
 from typing import Literal, Callable
 from pprint import pprint
 
 from pydantic import BaseModel, Field, conint, constr
-from llm.gpt5_nethack_agent import GPT5NanoAgent, LLMStep, JsonStep, StepKind
+from llm.gpt5_nethack_agent import GPT5NanoAgent, LLMStep, StepKind
 from nle import nethack
 
 from openai import OpenAI
@@ -252,7 +253,6 @@ class NethackTools:
         step = self.context.step(nethack.Command.PICKUP, "pick_up", None)
         return self._get_llm_response(step, True)
 
-
     def apply(self, inventory_id: str) -> str:
         """Apply an item from the inventory."""
         step = self.context.step([nethack.Command.APPLY, ord(inventory_id)], "apply", (inventory_id,))
@@ -301,12 +301,9 @@ class NethackTools:
 
         result = "Action completed. " if is_action else "Response sent. "
 
-        if not msg:
-            result += "Provide OUTPUT to the user."
-        else:
+        if msg:
             result += f"Nethack responded '{msg}'. "
-            result += "If this is a prompt, use NETHACK-RESPONSE to respond, otherwise provide OUTPUT to the user."
-
+        result += "Provide OUTPUT to the user."
         return result
 
 # Reusable enums
@@ -368,7 +365,7 @@ def register_tools(agent, tools : NethackTools):
     agent.register_tool(Search, lambda num_turns: tools.search(num_turns), "NETHACK-ACTION: Search the 8 squares around you, a num_turns of 22 is common to ensure you fully found everything.  Search should only be used if you are standing on a 1.0 search score tile, otherwise you should move to objects or frontier instead of searching.")
     agent.register_tool(Kick, lambda direction: tools.kick(direction), "NETHACK-ACTION: Kick in a direction")
     agent.register_tool(Eat, lambda: tools.eat(),
-                        "NETHACK-ACTION: Eat an item.  If there is something on the floor you will be prompted for a NETHACK-RESPONS y or n to eat that floor item, otherwise you will be prompted to use NETHACK-RESPONSE to select an inventory item.")
+                        "NETHACK-ACTION: Eat an item.  This will trigger a question of what to eat (including things which are directly under you on the floor).  The next turn you will use 'Respond' to respond to it.")
     agent.register_tool(Wield, lambda inventory_id: tools.wield(inventory_id),
                         "NETHACK-ACTION: Wield a weapon from your inventory.")
     agent.register_tool(Wear, lambda inventory_id: tools.wear(inventory_id),
@@ -386,28 +383,23 @@ def register_tools(agent, tools : NethackTools):
     agent.register_tool(PickUp, lambda: tools.pick_up(),
                         "NETHACK-ACTION: Pick up an item from the ground.")
     agent.register_tool(Respond, lambda response: tools.respond(response),
-                        "NETHACK-RESPONSE: Respond to an on screen prompt.")
+                        "NETHACK-ACTION: Respond to an on screen prompt.")
 
-def _print_output(step : LLMStep):
-    if step.kind == StepKind.OUTPUT_DELTA:
-        if step.thinking:
-            print(f"\033[33m{step.content}\033[0m", end="", flush=True)
-        else:
-            print(f"\033[34m{step.content}\033[0m", end="", flush=True)
-    elif step.kind == StepKind.FUNCTION_CALL:
-        print()
-        print(f"\033[31m{step.function_name}({step.arguments})\033[0m", flush=True)
-        print(step.content, flush=True)
+def _get_cost(tokens_used):
+    PRICE_INPUT = 0.050 / 1_000_000
+    PRICE_CACHED = 0.005 / 1_000_000
+    PRICE_OUTPUT = 0.400 / 1_000_000
 
-def _on_step(context, step):
-    context.env.render()
+    input_tokens = tokens_used.get("input", 0)
+    cached_tokens = tokens_used.get("cached", 0)
+    output_tokens = tokens_used.get("output", 0)
 
-def _get_result(chat_steps: list[LLMStep]):
-    for step in chat_steps:
-        if isinstance(step, JsonStep):
-            return step.content
-
-    raise ValueError("LLM did not produce a JsonStep")
+    cost = (
+        input_tokens * PRICE_INPUT
+        + cached_tokens * PRICE_CACHED
+        + output_tokens * PRICE_OUTPUT
+    )
+    return cost
 
 def main():
     with open("instructions.txt", "r", encoding="utf-8") as f:
@@ -419,26 +411,56 @@ def main():
         client=OpenAI(),
     )
 
+    total_cost = 0.0
+
+    messages = deque(maxlen=32)
+    actions = deque(maxlen=16)
+
     env = gym.make("NetHackChallenge-v0")
     o, i = env.reset()
-    env.render()
 
     context = NethackContext(env, yndf.NethackState(o, i, env))
+    context.env.render()
+    input("Press Enter to start...")
+
+    def _on_llm_step(step : LLMStep):
+        if step.kind == StepKind.OUTPUT_DELTA:
+            if step.thinking:
+                print(f"\033[33m{step.content}\033[0m", end="", flush=True)
+            else:
+                print(f"\033[34m{step.content}\033[0m", end="", flush=True)
+        elif step.kind == StepKind.FUNCTION_CALL:
+            print()
+            print(f"\033[31m{step.function_name}({step.arguments})\033[0m", flush=True)
+            print(step.content, flush=True)
+        elif step.kind == StepKind.JSON:
+            decision = step.content
+            actions.appendleft(
+                {
+                    "time": context.state.time,
+                    "action": decision.get("action", ""),
+                    "args": decision.get("args", ""),
+                    "notes": decision.get("notes", ""),
+                })
+
+
+    def _on_step(context, step : NethackStep):
+        if step.message:
+            messages.appendleft({"time": context.state.time, "message": step.message})
+
     context.register_callback(_on_step)
     nethack_tools = NethackTools(context)
 
     register_tools(agent, nethack_tools)
 
     while not context.done:
-        start_time = context.state.time
-        def is_complete():
-            return context.state.time > start_time
-
-        chat_steps, tokens = agent.chat(get_status_dict(context.state), is_complete, output_callback=_print_output)
+        context.env.render()
+        _, tokens = agent.chat(get_status_dict(context.state, messages, actions), output_callback=_on_llm_step)
         pprint(tokens)
-        _get_result(chat_steps)
 
-        # wait for "enter" on the keyboard
-        input("Press Enter to continue...")
+        total_cost += _get_cost(tokens)
+        print()
+        print(f"Total cost so far: ${total_cost:.6f}")
+        print()
 
 main()
