@@ -532,7 +532,6 @@ def train(args : PPOArgs) -> None:
                 next_obs, rewards, terminations, truncations, infos = envs.step(env_actions)
 
                 global_step += args.num_envs
-                progress.update(args.num_envs)
 
                 dones = np.logical_or(terminations, truncations)
                 rb.add(
@@ -661,11 +660,13 @@ def train(args : PPOArgs) -> None:
             writer.add_scalar("losses/entropy_verb", ent_verb.mean().item(), global_step)
             writer.add_scalar("losses/entropy_dir", dir_entropy_mean.item(), global_step)
             writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-            sps = int((global_step) / (time.time() - start_time))
-            writer.add_scalar("charts/SPS", sps, global_step)
+            if global_step >= 50_000:
+                sps = int((global_step) / (time.time() - start_time))
+                writer.add_scalar("charts/SPS", sps, global_step)
 
         # Reset buffer for next rollout
         rb = RolloutBuffer(args.num_steps, args.num_envs, obs_example=next_obs, num_verbs=num_verbs, device=device)
+        progress.update(args.num_envs * t)
 
     envs.close()
     progress.close()
